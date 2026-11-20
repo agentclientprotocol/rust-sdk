@@ -1116,7 +1116,7 @@ where
                         .await
                         .otherwise(async |mut dispatch| {
                             connection.translate_elicitation_request_id(Proxy, &mut dispatch)?;
-                            // Other messagrs send by the proxy go its predecessor.
+                            // Other messages sent by the proxy go to its predecessor.
                             // As in the previous handler:
                             //
                             // Messages here are seen in their "desugared form", so we are seeing
@@ -1178,20 +1178,9 @@ where
                 // then initializes itself and forwards an `initialize` request
                 // to its successor.
                 request.method = PROXY_INITIALIZE.to_string();
-                // The request is rewritten, so `forward_response_to` cannot be
-                // used here; wire up cancellation forwarding explicitly to
-                // keep `initialize` cancellable like every other forwarded
-                // request.
                 proxy
-                    .prepare_forwarded_request_to(Proxy, request, &responder)
-                    .forward_cancellation_from(responder.cancellation())
-                    .on_receiving_result(async move |result| {
-                        tracing::debug!(
-                            ok = result.is_ok(),
-                            "got initialize_proxy response from proxy"
-                        );
-                        responder.respond_with_result(result)
-                    })
+                    .prepare_request(request)
+                    .forward_response_to(responder)
             }
             message => proxy.send_proxied_message(message),
         }

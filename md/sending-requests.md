@@ -35,8 +35,12 @@ messages. Success and error responses have the same ordering.
 
 `on_receiving_ok_result(responder, callback)` and
 `forward_response_to(responder)` also select ordered handling before sending.
-`map(...)` and `forward_cancellation_from(...)` configure a prepared request
-without publishing it.
+For a forwarding proxy, `prepare_request_to(Agent, request).forward_response_to(responder)`
+also records the predecessor's ID before the agent can send a request-scoped
+elicitation. If you need a custom response callback, call
+`forwarded_from(&responder)` on the prepared request first. This propagates
+cancellation as well. Use `forward_cancellation_from(...)` instead for a child
+operation that should be cancelled with its parent but is not the same request.
 
 Keep ordered callbacks short. They must not await another response,
 notification, or other inbound traffic on the same connection: dispatch cannot

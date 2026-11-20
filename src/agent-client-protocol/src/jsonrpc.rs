@@ -2212,7 +2212,7 @@ struct PendingReply {
     cancellation_disarm: SentRequestCancellationDisarm,
     ordering: ResponseOrdering,
     response_route_hook: Option<ResponseRouteHook>,
-    forwarded_from: Option<(RawJsonRpcId, RequestCancellation)>,
+    forwarded_from: Option<RequestOrigin>,
     /// Set only by `v2::ConnectionTo::send_initialize`, whose typed outcome
     /// reports a lower-version initialize response as a success.
     accepts_lower_initialize_version: bool,
@@ -2382,12 +2382,63 @@ impl PendingRepliesRegistrar {
         }
     }
 
-    fn forwarded_request_id(&self, peer: RoleId, id: &RawJsonRpcId) -> Option<RawJsonRpcId> {
+    fn set_origin(&self, id: &RawJsonRpcId, origin: RequestOrigin) {
+        if let Some(inner) = self.inner.upgrade()
+            && let Some(reply) = inner
+                .lock()
+                .expect("pending replies mutex poisoned")
+                .replies
+                .get_mut(id)
+        {
+            reply.forwarded_from = Some(origin);
+        }
+    }
+
+    fn forwarded_origin(&self, peer: RoleId, id: &RawJsonRpcId) -> Option<RequestOrigin> {
         let inner = self.inner.upgrade()?;
         let inner = inner.lock().expect("pending replies mutex poisoned");
         let reply = inner.replies.get(id)?;
-        let (original_id, cancellation) = reply.forwarded_from.as_ref()?;
-        (reply.role_id == peer && !cancellation.is_cancelled()).then(|| original_id.clone())
+        // A conductor sends requests to the same physical proxy in both
+        // directions. The explicit successor envelope is a request *from*
+        // its successor, not a client request the proxy can elicit against.
+        if reply.role_id != peer
+            || reply.method == crate::v1::schema::PROXY_METHOD_NAMES.proxy_successor
+            || reply.cancellation_disarm.is_disarmed()
+        {
+            return None;
+        }
+        reply.forwarded_from.clone()
+    }
+
+    /// Rewrite only the ACP request-scope field. Don't deserialize the whole
+    /// request: proxies must preserve fields their SDK doesn't know.
+    fn translate_elicitation(
+        &self,
+        peer: RoleId,
+        request: &mut UntypedMessage,
+        accepts_origin: impl FnOnce(&RequestOrigin) -> bool,
+    ) -> Result<(), crate::Error> {
+        if !crate::v1::schema::CreateElicitationRequest::matches_method(request.method()) {
+            return Ok(());
+        }
+        let has_session_scope = request.params.get("sessionId").is_some();
+        let Some(reference) = request.params.get_mut("requestId") else {
+            return Ok(());
+        };
+        // V1 and v2 parsers can interpret a double scope differently. Never
+        // pass an unresolved requestId through on the strength of a sessionId.
+        if has_session_scope {
+            return Err(crate::Error::invalid_params().data("Ambiguous elicitation scope"));
+        }
+        let id =
+            RawJsonRpcId::deserialize(&*reference).map_err(|_| crate::Error::invalid_params())?;
+        let id = self
+            .forwarded_origin(peer, &id)
+            .filter(accepts_origin)
+            .and_then(RequestOrigin::live_id)
+            .ok_or_else(|| crate::Error::invalid_params().data("Unknown forwarded request ID"))?;
+        *reference = serde_json::to_value(id).expect("a JSON-RPC ID is JSON serializable");
+        Ok(())
     }
 
     fn remove(&self, id: &RawJsonRpcId) -> Option<PendingReply> {
@@ -2555,6 +2606,39 @@ struct ResponderCancellation {
     registry: RequestCancellationRegistry,
 }
 
+/// A non-owning reference to one incoming request, not just its wire ID.
+/// Reusing an upstream ID must never transfer an old callback to its new owner.
+#[derive(Clone)]
+struct RequestOrigin {
+    id: RawJsonRpcId,
+    generation: u64,
+    registry: Weak<Mutex<RequestCancellationRegistryInner>>,
+    /// A default SDK proxy can return an elicitation only to its own predecessor,
+    /// not to the origin of an arbitrary side request forwarded to its agent.
+    from_local_predecessor: bool,
+}
+
+impl RequestOrigin {
+    fn live_id(self) -> Option<RawJsonRpcId> {
+        let registry = self.registry.upgrade()?;
+        let inner = registry
+            .lock()
+            .expect("request cancellation registry mutex poisoned");
+        let slot = inner.slots.get(&self.id)?;
+        (slot.generation == self.generation && !slot.entry.is_cancelled()).then_some(self.id)
+    }
+}
+
+impl RequestCancellationEntry {
+    fn is_cancelled(&self) -> bool {
+        match self {
+            Self::Armed => false,
+            Self::Cancelled => true,
+            Self::Marker(marker) => marker.is_cancelled(),
+        }
+    }
+}
+
 impl RequestCancellationRegistry {
     fn new() -> Self {
         Self::default()
@@ -2709,11 +2793,7 @@ impl ResponderCancellation {
         if slot.generation != self.generation {
             return false;
         }
-        match &slot.entry {
-            RequestCancellationEntry::Armed => false,
-            RequestCancellationEntry::Cancelled => true,
-            RequestCancellationEntry::Marker(marker) => marker.is_cancelled(),
-        }
+        slot.entry.is_cancelled()
     }
 }
 
@@ -3899,6 +3979,8 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// because the responders passed to
     /// [`forward_response_to`](SentRequest::forward_response_to) observe it
     /// and re-issue the cancellation with the forwarded request's own ID.
+    /// A proxy forwarding an `elicitation/create` from its successor to its
+    /// client also translates `params.requestId` back to that client's ID.
     pub fn send_proxied_message_to<
         Peer: Role,
         Req: JsonRpcRequest<Response: Send>,
@@ -3913,9 +3995,16 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         Counterpart: HasPeer<Peer>,
     {
         match message {
-            Dispatch::Request(request, responder) => self
-                .prepare_forwarded_request_to(peer, request, &responder)
-                .forward_response_to(responder),
+            Dispatch::Request(request, responder) => {
+                let mut prepared = self.prepare_request_to(peer, request);
+                if let Err(error) = prepared
+                    .publication
+                    .translate_proxied_elicitation(&responder)
+                {
+                    return responder.respond_with_error(error);
+                }
+                prepared.forward_response_to(responder)
+            }
             Dispatch::Notification(notification) => {
                 // `$/cancel_request` is connection-scoped: its `requestId` was
                 // allocated on the connection the notification arrived over
@@ -3939,25 +4028,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         }
     }
 
-    /// Prepare a forwarded request and record the original request ID before publication.
-    #[doc(hidden)]
-    pub fn prepare_forwarded_request_to<Peer: Role, Req: JsonRpcRequest, Q: Protocol>(
-        &self,
-        peer: Peer,
-        request: Req,
-        responder: &Responder<Req::Response, Q>,
-    ) -> PreparedRequest<Req::Response>
-    where
-        Counterpart: HasPeer<Peer>,
-    {
-        let mut prepared = self.prepare_request_to(peer, request);
-        prepared.publication.pending_reply.forwarded_from =
-            Some((responder.raw_id().clone(), responder.cancellation()));
-        prepared
-    }
-
     /// Restore the originator's ID in a request-scoped elicitation received from this peer.
     ///
+    /// Used by the conductor on ingress, before enqueueing a dispatch for its
+    /// fixed predecessor. Reading a later response can retire the association.
     /// A reference that cannot be resolved on this hop is invalid. Forwarding
     /// it unchanged could accidentally match an unrelated upstream request.
     #[doc(hidden)]
@@ -3972,20 +4046,9 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         let Dispatch::Request(request, _) = message else {
             return Ok(());
         };
-        if request.method() != "elicitation/create" || request.params.get("sessionId").is_some() {
-            return Ok(());
-        }
-        let Some(reference) = request.params.get_mut("requestId") else {
-            return Ok(());
-        };
-        let id =
-            RawJsonRpcId::deserialize(&*reference).map_err(|_| crate::Error::invalid_params())?;
-        let id = self
-            .pending_replies
-            .forwarded_request_id(peer.role_id(), &id)
-            .ok_or_else(|| crate::Error::invalid_params().data("Unknown forwarded request ID"))?;
-        *reference = serde_json::to_value(id).expect("a JSON-RPC ID is JSON serializable");
-        Ok(())
+        // The conductor owns these routes: each component has a fixed predecessor.
+        self.pending_replies
+            .translate_elicitation(peer.role_id(), request, |_| true)
     }
 
     /// Send an outgoing request and return a [`SentRequest`] for handling the reply.
@@ -4118,11 +4181,11 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         self.prepare_request_to_with_options(peer, request, None, None)
     }
 
-    /// Send a request and run a synchronous side effect when its valid success
+    /// Prepare a request and run a synchronous side effect when its valid success
     /// response is routed, after `before_send` completes and independently
     /// from how the returned request is eventually consumed.
     #[cfg(feature = "unstable_protocol_v2")]
-    pub(crate) fn send_request_to_with_response_hook_after<
+    pub(crate) fn prepare_request_to_with_response_hook_after<
         P: Protocol,
         Peer: Role,
         Req: JsonRpcRequest,
@@ -4133,7 +4196,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         request: Req,
         before_send: BeforeSend,
         response_hook: impl FnOnce(&Req::Response) -> Result<(), crate::Error> + Send + 'static,
-    ) -> SentRequest<Req::Response, P>
+    ) -> PreparedRequest<Req::Response, P>
     where
         Counterpart: HasPeer<Peer>,
     {
@@ -4141,40 +4204,9 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             let response = Req::Response::from_json(method, value.clone())?;
             response_hook(&response)
         });
-        self.send_request_to_with_options(
+        self.prepare_request_to_with_options(
             peer,
             request,
-            false,
-            Some(RequestReadiness::new(before_send)),
-            Some(hook),
-        )
-    }
-
-    /// Send an ordered request with readiness and valid-success hooks.
-    #[cfg(feature = "unstable_protocol_v2")]
-    pub(crate) fn send_ordered_request_to_with_response_hook_after<
-        P: Protocol,
-        Peer: Role,
-        Req: JsonRpcRequest,
-        BeforeSend: Future<Output = Result<(), crate::Error>> + Send + 'static,
-    >(
-        &self,
-        peer: Peer,
-        request: Req,
-        before_send: BeforeSend,
-        response_hook: impl FnOnce(&Req::Response) -> Result<(), crate::Error> + Send + 'static,
-    ) -> SentRequest<Req::Response, P>
-    where
-        Counterpart: HasPeer<Peer>,
-    {
-        let hook: ResponseRouteHook = Box::new(move |method, value| {
-            let response = Req::Response::from_json(method, value.clone())?;
-            response_hook(&response)
-        });
-        self.send_request_to_with_options(
-            peer,
-            request,
-            true,
             Some(RequestReadiness::new(before_send)),
             Some(hook),
         )
@@ -4291,6 +4323,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             id,
             method.clone(),
             self.task_tx.clone(),
+            self.pending_replies.clone(),
             response_rx,
             cancellation,
             response_ordering,
@@ -4808,6 +4841,17 @@ impl<P: Protocol> Responder<serde_json::Value, P> {
 }
 
 impl<T: JsonRpcResponse, P: Protocol> Responder<T, P> {
+    fn origin_for_forwarding(&self, outgoing: &OutgoingMessageTx) -> RequestOrigin {
+        let guard = &self.drop_guard;
+        RequestOrigin {
+            id: self.raw_id().clone(),
+            generation: guard.cancellation.generation,
+            registry: Arc::downgrade(&guard.cancellation.registry.inner),
+            from_local_predecessor: outgoing.same_receiver(&guard.message_tx)
+                && guard.wire_method != crate::v1::schema::PROXY_METHOD_NAMES.proxy_successor,
+        }
+    }
+
     /// Method of the incoming request
     #[must_use]
     pub fn method(&self) -> &str {
@@ -5877,6 +5921,7 @@ pub struct SentRequest<T, P: Protocol = Raw> {
     id: HandleId<P>,
     method: String,
     task_tx: TaskTx,
+    pending_replies: PendingRepliesRegistrar,
     response_rx: oneshot::Receiver<ResponsePayload>,
     /// Converts the raw response into the typed result. It receives error
     /// responses too, so [`SentRequest::recover_error`] can map an error to a
@@ -5940,6 +5985,35 @@ struct RequestPublication {
 }
 
 impl RequestPublication {
+    /// When relaying a dispatch through an SDK proxy, both logical peers
+    /// share one connection. Restore a request reference only if the callback
+    /// came from its successor and the original request from its predecessor.
+    fn translate_proxied_elicitation<T: JsonRpcResponse, Q: Protocol>(
+        &mut self,
+        responder: &Responder<T, Q>,
+    ) -> Result<(), crate::Error> {
+        let Ok(OutgoingMessage::Request {
+            remote_style: crate::role::RemoteStyle::Predecessor,
+            untyped,
+            ..
+        }) = &mut self.message
+        else {
+            return Ok(());
+        };
+        if self.pending_reply.role_id != crate::Client.role_id() {
+            return Ok(());
+        }
+        self.pending_replies
+            .translate_elicitation(Agent.role_id(), untyped, |origin| {
+                origin.from_local_predecessor
+                    && self
+                        .message_tx
+                        .same_receiver(&responder.drop_guard.message_tx)
+                    && responder.drop_guard.wire_method
+                        == crate::v1::schema::PROXY_METHOD_NAMES.proxy_successor
+            })
+    }
+
     fn publish(self) -> Result<(), crate::Error> {
         let message = if self.incoming_closed.is_closing() {
             Err(incoming_transport_closed_error(&self.pending_reply.method))
@@ -6078,6 +6152,22 @@ impl<T, P: Protocol> PreparedRequest<T, P> {
         self
     }
 
+    /// Associate this outgoing request with the incoming request being forwarded.
+    ///
+    /// Use this when transforming the response in a custom proxy callback.
+    /// The association lets default ACP forwarding translate request-scoped
+    /// elicitations and propagates cancellation from `responder`. Merely
+    /// sharing a cancellation source does not establish request identity.
+    /// [`forward_response_to`](Self::forward_response_to) does this automatically.
+    pub fn forwarded_from<Q: Protocol>(mut self, responder: &Responder<T, Q>) -> Self
+    where
+        T: JsonRpcResponse,
+    {
+        self.publication.pending_reply.forwarded_from =
+            Some(responder.origin_for_forwarding(&self.publication.message_tx));
+        self.forward_cancellation_from(responder.cancellation())
+    }
+
     /// Publish now and return an unordered future for the response.
     ///
     /// The request is enqueued during this call, not when the future is first
@@ -6160,8 +6250,9 @@ impl<T, P: Protocol> PreparedRequest<T, P> {
 
     /// Register ordered response forwarding, then publish the request.
     ///
-    /// Cancellation and response errors propagate as with
-    /// [`SentRequest::forward_response_to`].
+    /// The upstream request ID is recorded before publication, so even an
+    /// immediate request-scoped elicitation can be translated on its way back.
+    /// Cancellation and response errors propagate as with [`SentRequest::forward_response_to`].
     ///
     /// # Errors
     ///
@@ -6175,13 +6266,13 @@ impl<T, P: Protocol> PreparedRequest<T, P> {
     where
         T: JsonRpcResponse,
     {
-        self.forward_cancellation_from(responder.cancellation())
+        self.forwarded_from(&responder)
             .consume_with(async move |response| {
                 responder.respond_with_result(response.unwrap_or_else(Err))
             })
     }
 
-    fn into_sent_request(self, ordered: bool) -> SentRequest<T, P> {
+    pub(crate) fn into_sent_request(self, ordered: bool) -> SentRequest<T, P> {
         if ordered {
             self.sent.response_ordering.mark_ordered();
         }
@@ -6278,6 +6369,10 @@ impl SentRequestCancellationDisarm {
 
     fn is_armed(&self) -> bool {
         self.state.load(Ordering::Acquire) == OutgoingCancellationState::Armed as u8
+    }
+
+    fn is_disarmed(&self) -> bool {
+        self.state.load(Ordering::Acquire) == OutgoingCancellationState::Disarmed as u8
     }
 }
 
@@ -6469,6 +6564,7 @@ impl<P: Protocol> SentRequest<serde_json::Value, P> {
         id: HandleId<P>,
         method: String,
         task_tx: mpsc::UnboundedSender<Task>,
+        pending_replies: PendingRepliesRegistrar,
         response_rx: oneshot::Receiver<ResponsePayload>,
         cancellation: SentRequestCancellation,
         response_ordering: ResponseOrdering,
@@ -6478,6 +6574,7 @@ impl<P: Protocol> SentRequest<serde_json::Value, P> {
             method,
             response_rx,
             task_tx,
+            pending_replies,
             to_result: Box::new(|result| result),
             cancellation,
             response_ordering,
@@ -6599,6 +6696,7 @@ impl<T, P: Protocol> SentRequest<T, P> {
             id: retag(self.id),
             method: self.method,
             task_tx: self.task_tx,
+            pending_replies: self.pending_replies,
             response_rx: self.response_rx,
             to_result: self.to_result,
             cancellation: self.cancellation,
@@ -6685,6 +6783,7 @@ impl<T, P: Protocol> SentRequest<T, P> {
             method: self.method,
             response_rx: self.response_rx,
             task_tx: self.task_tx,
+            pending_replies: self.pending_replies,
             to_result: Box::new(move |result| map_fn((self.to_result)(result)?)),
             cancellation: self.cancellation,
             response_ordering: self.response_ordering,
@@ -6697,6 +6796,10 @@ impl<T, P: Protocol> SentRequest<T, P> {
     /// This is a convenience method for proxying messages between connections. When the
     /// response arrives, it will be automatically sent to the provided request context,
     /// whether it's a successful response or an error.
+    ///
+    /// This also records the upstream ID for request-scoped elicitations.
+    /// When the peer can run concurrently, use [`PreparedRequest::forward_response_to`]
+    /// to install that association before the outgoing request is observable.
     ///
     /// # Example: Proxying requests
     ///
@@ -6762,6 +6865,10 @@ impl<T, P: Protocol> SentRequest<T, P> {
     where
         T: JsonRpcResponse,
     {
+        self.pending_replies.set_origin(
+            self.raw_id(),
+            responder.origin_for_forwarding(&self.cancellation.handle.message_tx),
+        );
         let this = self.forward_cancellation_from(responder.cancellation());
 
         this.consume_with(async move |response| {
@@ -8394,20 +8501,22 @@ mod tests {
     fn response_hook_runs_when_success_is_routed_before_consumption() {
         let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
         let hook_ran = Arc::new(AtomicBool::new(false));
-        let sent = connection.send_request_to_with_response_hook_after::<Raw, _, _, _>(
-            crate::role::UntypedRole,
-            UntypedMessage::new("hooked", serde_json::json!({}))
-                .expect("test request should serialize"),
-            future::ready(Ok(())),
-            {
-                let hook_ran = hook_ran.clone();
-                move |response| {
-                    assert_eq!(response, &serde_json::json!({"ok": true}));
-                    hook_ran.store(true, Ordering::Release);
-                    Ok(())
-                }
-            },
-        );
+        let sent = connection
+            .prepare_request_to_with_response_hook_after::<Raw, _, _, _>(
+                crate::role::UntypedRole,
+                UntypedMessage::new("hooked", serde_json::json!({}))
+                    .expect("test request should serialize"),
+                future::ready(Ok(())),
+                {
+                    let hook_ran = hook_ran.clone();
+                    move |response| {
+                        assert_eq!(response, &serde_json::json!({"ok": true}));
+                        hook_ran.store(true, Ordering::Release);
+                        Ok(())
+                    }
+                },
+            )
+            .into_sent_request(false);
         let request_id = sent.raw_id().clone();
 
         route_test_response(
@@ -8429,19 +8538,21 @@ mod tests {
     fn response_hook_skips_errors_but_outlives_a_dropped_consumer() {
         let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
         let peer_error_hook_ran = Arc::new(AtomicBool::new(false));
-        let peer_error = connection.send_request_to_with_response_hook_after::<Raw, _, _, _>(
-            crate::role::UntypedRole,
-            UntypedMessage::new("peer-error", serde_json::json!({}))
-                .expect("test request should serialize"),
-            future::ready(Ok(())),
-            {
-                let hook_ran = peer_error_hook_ran.clone();
-                move |_| {
-                    hook_ran.store(true, Ordering::Release);
-                    Ok(())
-                }
-            },
-        );
+        let peer_error = connection
+            .prepare_request_to_with_response_hook_after::<Raw, _, _, _>(
+                crate::role::UntypedRole,
+                UntypedMessage::new("peer-error", serde_json::json!({}))
+                    .expect("test request should serialize"),
+                future::ready(Ok(())),
+                {
+                    let hook_ran = peer_error_hook_ran.clone();
+                    move |_| {
+                        hook_ran.store(true, Ordering::Release);
+                        Ok(())
+                    }
+                },
+            )
+            .into_sent_request(false);
         let peer_error_id = peer_error.raw_id().clone();
         route_test_response(
             peer_error_id,
@@ -8455,19 +8566,21 @@ mod tests {
         assert!(!peer_error_hook_ran.load(Ordering::Acquire));
 
         let dropped_hook_ran = Arc::new(AtomicBool::new(false));
-        let dropped = connection.send_request_to_with_response_hook_after::<Raw, _, _, _>(
-            crate::role::UntypedRole,
-            UntypedMessage::new("dropped", serde_json::json!({}))
-                .expect("test request should serialize"),
-            future::ready(Ok(())),
-            {
-                let hook_ran = dropped_hook_ran.clone();
-                move |_| {
-                    hook_ran.store(true, Ordering::Release);
-                    Ok(())
-                }
-            },
-        );
+        let dropped = connection
+            .prepare_request_to_with_response_hook_after::<Raw, _, _, _>(
+                crate::role::UntypedRole,
+                UntypedMessage::new("dropped", serde_json::json!({}))
+                    .expect("test request should serialize"),
+                future::ready(Ok(())),
+                {
+                    let hook_ran = dropped_hook_ran.clone();
+                    move |_| {
+                        hook_ran.store(true, Ordering::Release);
+                        Ok(())
+                    }
+                },
+            )
+            .into_sent_request(false);
         let dropped_id = dropped.raw_id().clone();
         drop(dropped);
         route_test_response(
@@ -8482,13 +8595,15 @@ mod tests {
     #[test]
     fn response_hook_failure_replaces_the_success_result() {
         let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
-        let sent = connection.send_request_to_with_response_hook_after::<Raw, _, _, _>(
-            crate::role::UntypedRole,
-            UntypedMessage::new("hook-failure", serde_json::json!({}))
-                .expect("test request should serialize"),
-            future::ready(Ok(())),
-            |_| Err(crate::Error::internal_error().data("response hook failed")),
-        );
+        let sent = connection
+            .prepare_request_to_with_response_hook_after::<Raw, _, _, _>(
+                crate::role::UntypedRole,
+                UntypedMessage::new("hook-failure", serde_json::json!({}))
+                    .expect("test request should serialize"),
+                future::ready(Ok(())),
+                |_| Err(crate::Error::internal_error().data("response hook failed")),
+            )
+            .into_sent_request(false);
         let request_id = sent.raw_id().clone();
         route_test_response(
             request_id,
@@ -8698,7 +8813,7 @@ mod tests {
     fn outgoing_request_readiness_failure_rejects_without_publication() {
         let (connection, message_rx, pending_replies) = connection_for_response_hook_tests();
         let hook_ran = Arc::new(AtomicBool::new(false));
-        let sent = connection.send_request_to_with_response_hook_after::<Raw, _, _, _>(
+        let sent = connection.prepare_request_to_with_response_hook_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("never-published", serde_json::json!({}))
                 .expect("test request should serialize"),
@@ -8711,6 +8826,7 @@ mod tests {
                 }
             },
         );
+        let sent = sent.into_sent_request(false);
 
         let (transport_tx, mut transport_rx) = mpsc::unbounded();
         let mut actor = Box::pin(outgoing_actor::outgoing_protocol_actor(

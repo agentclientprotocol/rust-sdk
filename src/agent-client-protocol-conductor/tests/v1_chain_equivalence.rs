@@ -18,7 +18,7 @@ use agent_client_protocol::{
     UntypedMessage, schema::ProtocolVersion, v1::schema as v1,
 };
 use agent_client_protocol_conductor::{
-    ConductorImpl, InstantiatedChain, SelectedInitializeRequest,
+    ConductorImpl, InstantiatedChain, ProxiesAndAgent, SelectedInitializeRequest,
 };
 use agent_client_protocol_rmcp::rmcp_3::McpServerExt as _;
 use futures::{SinkExt as _, StreamExt as _, channel::mpsc};
@@ -309,8 +309,29 @@ fn request_scoped_elicitation_agent() -> impl ConnectTo<Client> {
             if request.method() == "initialize" {
                 return responder.respond(json!({
                     "protocolVersion": 1,
-                    "authMethods": [{"id": "url", "name": "URL"}, {"id": "form", "name": "Form"}, {"id": "unknown", "name": "Unknown"}],
+                    "authMethods": [
+                        {"id": "url", "name": "URL"}, {"id": "form", "name": "Form"},
+                        {"id": "unknown", "name": "Unknown"},
+                    ],
                 }));
+            }
+            if request.method() == "session/new" {
+                return responder.respond(json!({"sessionId": "s"}));
+            }
+            if request.method() == "session/prompt" {
+                return cx
+                    .prepare_request(UntypedMessage::new(
+                        "elicitation/create",
+                        json!({
+                            "sessionId": "s", "toolCallId": "tool", "message": "Choose",
+                            "mode": "form", "requestedSchema": {"type": "object", "properties": {}},
+                            "_meta": {"requestId": 3},
+                        }),
+                    )?)
+                    .on_receiving_result(async move |result| {
+                        assert_eq!(result?["action"], "decline");
+                        responder.respond(json!({"stopReason": "end_turn"}))
+                    });
             }
             assert_eq!(request.method(), "authenticate");
             let method_id = request.params()["methodId"].as_str();
@@ -350,22 +371,43 @@ fn request_scoped_elicitation_agent() -> impl ConnectTo<Client> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn request_scoped_elicitation_references_survive_proxy_hops() {
-    for hops in [None, Some(0), Some(2)] {
+    let chain = || ProxiesAndAgent::new(request_scoped_elicitation_agent());
+    let intercept = Proxy
+        .v1()
+        .on_receive_request_from(
+            Client,
+            async |req: v1::AuthenticateRequest, responder, cx| {
+                cx.send_request_to(Agent, req)
+                    .forward_response_to(responder)
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_dispatch_from(
+            Agent,
+            async |message: agent_client_protocol::v1::Dispatch, cx| {
+                cx.send_proxied_message_to(Client, message)
+            },
+            agent_client_protocol::on_receive_dispatch!(),
+        );
+    let nested = ConductorImpl::new_proxy("inner", vec![Proxy.v1()]);
+    for (path, components) in [
+        ("direct", None),
+        ("zero proxies", Some(chain())),
+        (
+            "two proxies",
+            Some(chain().proxy(Proxy.v1()).proxy(Proxy.v1())),
+        ),
+        ("intercepting proxy", Some(chain().proxy(intercept))),
+        ("nested conductor", Some(chain().proxy(nested))),
+    ] {
         let (incoming, incoming_rx) = mpsc::unbounded::<io::Result<String>>();
         let (outgoing_tx, mut outgoing) = mpsc::unbounded::<String>();
         let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
-        let task = match hops {
+        let proxied = components.is_some();
+        let task = match components {
             None => tokio::spawn(request_scoped_elicitation_agent().connect_to(transport)),
-            Some(hops) => {
-                let conductor = ConductorImpl::new_agent(
-                    "request-scoped-elicitation",
-                    move |request: SelectedInitializeRequest| async move {
-                        let proxies = (0..hops).map(|_| DynConnectTo::new(Proxy.v1())).collect();
-                        let agent = DynConnectTo::new(request_scoped_elicitation_agent());
-                        Ok(InstantiatedChain::new(request.into_v1()?, proxies, agent))
-                    },
-                );
-                tokio::spawn(conductor.connect_to(transport))
+            Some(chain) => {
+                tokio::spawn(ConductorImpl::new_agent(path, chain).connect_to(transport))
             }
         };
         let send = |message: Value| {
@@ -400,7 +442,7 @@ async fn request_scoped_elicitation_references_survive_proxy_hops() {
                 assert_eq!(challenge["params"]["mode"], "form");
                 json!("3")
             };
-            assert_eq!(challenge["params"]["requestId"], expected, "hops: {hops:?}");
+            assert_eq!(challenge["params"]["requestId"], expected, "{path}");
             send(json!({
                 "jsonrpc": "2.0", "id": challenge["id"], "result": {"action": "accept"},
             }));
@@ -413,16 +455,34 @@ async fn request_scoped_elicitation_references_survive_proxy_hops() {
                     .any(|r| r["id"] == id && r["result"] == json!({}))
             );
         }
-        if hops.is_some() {
+        if proxied {
+            // 3 is a *live* client request again, but is not the ID the agent received.
             send(json!({
-                "jsonrpc": "2.0", "id": 4, "method": "authenticate",
+                "jsonrpc": "2.0", "id": 3, "method": "authenticate",
                 "params": {"methodId": "unknown"},
             }));
             assert_eq!(
                 recv().await,
-                json!({"jsonrpc": "2.0", "id": 4, "result": {}})
+                json!({"jsonrpc": "2.0", "id": 3, "result": {}}),
+                "{path}"
             );
         }
+
+        send(json!({"jsonrpc": "2.0", "id": 4, "method": "session/new",
+                    "params": {"cwd": "/", "mcpServers": []}}));
+        assert_eq!(recv().await["result"]["sessionId"], "s");
+        send(
+            json!({"jsonrpc": "2.0", "id": 5, "method": "session/prompt",
+                    "params": {"sessionId": "s", "prompt": []}}),
+        );
+        let challenge = recv().await;
+        assert_eq!(challenge["method"], "elicitation/create", "{path}");
+        assert_eq!(challenge["params"]["sessionId"], "s");
+        assert_eq!(challenge["params"]["toolCallId"], "tool");
+        assert!(challenge["params"].get("requestId").is_none());
+        assert_eq!(challenge["params"]["_meta"]["requestId"], 3);
+        send(json!({"jsonrpc": "2.0", "id": challenge["id"], "result": {"action": "decline"}}));
+        assert_eq!(recv().await["result"]["stopReason"], "end_turn");
         drop(incoming);
         tokio::time::timeout(TIMEOUT, task)
             .await

@@ -870,9 +870,8 @@ where
 
         // Send the "new session" request to the agent.
         let sent = connection
-            .raw_connection()
-            .prepare_forwarded_request_to(Agent, request, &responder);
-        let sent = sent.forward_cancellation_from(responder.cancellation());
+            .prepare_request_to(Agent, request)
+            .forwarded_from(&responder);
 
         sent.on_receiving_ok_result(responder, {
             let connection = connection.clone();
@@ -993,6 +992,21 @@ where
     where
         R: 'static,
     {
+        self.send_session_start(None)?.await
+    }
+
+    fn send_session_start(
+        self,
+        origin: Option<&Responder<NewSessionResponse, crate::V1>>,
+    ) -> Result<
+        impl Future<
+            Output = Result<SessionSetup<'static, Counterpart, NewSessionResponse>, crate::Error>,
+        > + use<Counterpart, R>,
+        crate::Error,
+    >
+    where
+        R: 'static,
+    {
         let Self {
             connection,
             request,
@@ -1011,14 +1025,17 @@ where
         ))?;
 
         let session_connection = connection.clone();
-        connection
-            .raw_connection()
-            .send_ordered_request_to::<Raw, _, _>(Agent, request)
+        let prepared = connection.prepare_request_to(Agent, request);
+        let prepared = match origin {
+            Some(responder) => prepared.forwarded_from(responder),
+            None => prepared,
+        };
+        Ok(prepared
+            .into_sent_request(true)
             .block_task_with_ordered_result(move |result| {
                 let response = result?;
                 session_connection.attach_session(response, dynamic_handler_registrations)
-            })
-            .await
+            }))
     }
 
     /// Start a proxy session that forwards all messages between client and agent.
@@ -1051,7 +1068,7 @@ where
     {
         let SessionSetup {
             session, response, ..
-        } = self.start_session().await?;
+        } = self.send_session_start(Some(&responder))?.await?;
         responder.respond(response.clone())?;
         session.proxy_remaining_messages()?;
         Ok(response)

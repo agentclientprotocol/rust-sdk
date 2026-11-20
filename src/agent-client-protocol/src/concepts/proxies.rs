@@ -53,7 +53,10 @@
 //! # }
 //! ```
 //!
-//! All messages pass through unchanged.
+//! The proxy forwards payloads without re-encoding them. One field is
+//! hop-local: when an agent sends a request-scoped `elicitation/create`,
+//! the proxy restores the predecessor's request ID in `params.requestId`.
+//! Session and tool-call IDs are not translated.
 //!
 //! # Intercepting Messages
 //!
@@ -72,7 +75,7 @@
 //!         };
 //!
 //!         // Forward to agent and relay the response back
-//!         cx.send_request_to(Agent, modified)
+//!         cx.prepare_request_to(Agent, modified)
 //!             .forward_response_to(responder)
 //!     }, agent_client_protocol::on_receive_request!())
 //!     .connect_to(transport)
@@ -82,6 +85,12 @@
 //! ```
 //!
 //! Messages you don't handle are forwarded automatically.
+//! If you transform the response yourself, use
+//! [`PreparedRequest::forwarded_from`](crate::PreparedRequest::forwarded_from)
+//! before registering your callback to preserve the upstream request's ID and cancellation.
+//! For the reverse direction, leave elicitation callbacks to default forwarding
+//! or relay the incoming dispatch with `cx.send_proxied_message_to(Client, message)`.
+//! An independently constructed request to `Client` already uses the client's ID namespace.
 //!
 //! # Adding MCP Servers
 //!

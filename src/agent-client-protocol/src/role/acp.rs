@@ -1708,17 +1708,14 @@ async fn forward_proxy_dispatch(
             if request.method() == PROXY_METHOD_NAMES.proxy_initialize =>
         {
             request.method = "initialize".to_string();
-            cx.prepare_forwarded_request_to(Agent, request, &responder)
+            cx.prepare_request_to(Agent, request)
                 .forward_response_to(responder)?;
             return Ok(Handled::Yes);
         }
         Dispatch::Request(request, responder) if request.method() == "session/new" => {
-            let sent = cx.prepare_forwarded_request_to(Agent, request, &responder);
-            // The dynamic-handler hook below means we cannot use
-            // `forward_response_to`, so wire up cancellation forwarding
-            // explicitly to keep `session/new` cancellable like every
-            // other proxied request.
-            let sent = sent.forward_cancellation_from(responder.cancellation());
+            let sent = cx
+                .prepare_request_to(Agent, request)
+                .forwarded_from(&responder);
             sent.on_receiving_result({
                 let cx = cx.clone();
                 async move |result| {
@@ -1746,8 +1743,7 @@ async fn forward_proxy_dispatch(
             cx.send_proxied_message_to(Agent, message)
         })
         .await
-        .if_dispatch_from(Agent, async |mut message: Dispatch| {
-            cx.translate_elicitation_request_id(Agent, &mut message)?;
+        .if_dispatch_from(Agent, async |message: Dispatch| {
             cx.send_proxied_message_to(Client, message)
         })
         .await

@@ -121,8 +121,16 @@ Forwarding is the same for every protocol version and does not depend on the
 feature: `proxy/initialize` has the same wire shape in v1 and v2. The
 conductor rejects a `proxy/initialize` that arrives from outside, renames
 `initialize` to `proxy/initialize` for the first proxy with its params
-untouched, and forwards everything else unchanged, without parsing or
-re-serializing it. The conductor's connections to its client and to the final
+untouched, and preserves fields it doesn't recognize.
+
+Each hop allocates a new JSON-RPC ID. When an agent sends a request-scoped
+`elicitation/create`, each forwarding hop translates `params.requestId` back
+to the ID its predecessor used. A reference with no matching live forwarded
+request on that hop is answered with `-32602` (Invalid params), not passed
+through. The callback's own ID and response use normal request routing;
+session-scoped elicitations, tool-call IDs and nested MCP payloads are unchanged.
+
+The conductor's connections to its client and to the final
 agent, and the pass-through proxy it inserts for tracing, have no protocol
 version guard; the endpoints validate the traffic of the negotiated version.
 
