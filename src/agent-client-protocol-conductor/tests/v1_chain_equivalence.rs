@@ -300,3 +300,134 @@ async fn v1_mcp_proxy_keeps_unmodeled_session_fields() {
     assert_eq!(servers.len(), 1, "{params}");
     assert_eq!(servers[0]["name"], "raw-fields", "{params}");
 }
+
+fn request_scoped_elicitation_agent() -> impl ConnectTo<Client> {
+    Agent.v1().on_receive_request(
+        async |request: UntypedMessage,
+               responder: Responder<Value, V1>,
+               cx: ConnectionTo<Client>| {
+            if request.method() == "initialize" {
+                return responder.respond(json!({
+                    "protocolVersion": 1,
+                    "authMethods": [{"id": "url", "name": "URL"}, {"id": "form", "name": "Form"}, {"id": "unknown", "name": "Unknown"}],
+                }));
+            }
+            assert_eq!(request.method(), "authenticate");
+            let method_id = request.params()["methodId"].as_str();
+            let unknown = method_id == Some("unknown");
+            let mut params = match method_id {
+                Some("url" | "unknown") => json!({
+                    "mode": "url",
+                    "elicitationId": "fixture",
+                    "url": "https://example.com/auth",
+                    "message": "Fixture URL",
+                }),
+                Some("form") => json!({
+                    "mode": "form",
+                    "requestedSchema": {"type": "object", "properties": {}},
+                    "message": "Fixture form",
+                }),
+                mode => panic!("unexpected mode {mode:?}"),
+            };
+            params["requestId"] = if unknown {
+                json!(3)
+            } else {
+                serde_json::to_value(responder.raw_id()).unwrap()
+            };
+            cx.send_request(UntypedMessage::new("elicitation/create", params)?)
+                .on_receiving_result(async move |result| {
+                    if unknown {
+                        assert_eq!(result.unwrap_err().code, Error::invalid_params().code);
+                    } else {
+                        assert_eq!(result?["action"], "accept");
+                    }
+                    responder.respond(json!({}))
+                })
+        },
+        agent_client_protocol::on_receive_request!(),
+    )
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn request_scoped_elicitation_references_survive_proxy_hops() {
+    for hops in [None, Some(0), Some(2)] {
+        let (incoming, incoming_rx) = mpsc::unbounded::<io::Result<String>>();
+        let (outgoing_tx, mut outgoing) = mpsc::unbounded::<String>();
+        let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
+        let task = match hops {
+            None => tokio::spawn(request_scoped_elicitation_agent().connect_to(transport)),
+            Some(hops) => {
+                let conductor = ConductorImpl::new_agent(
+                    "request-scoped-elicitation",
+                    move |request: SelectedInitializeRequest| async move {
+                        let proxies = (0..hops).map(|_| DynConnectTo::new(Proxy.v1())).collect();
+                        let agent = DynConnectTo::new(request_scoped_elicitation_agent());
+                        Ok(InstantiatedChain::new(request.into_v1()?, proxies, agent))
+                    },
+                );
+                tokio::spawn(conductor.connect_to(transport))
+            }
+        };
+        let send = |message: Value| {
+            incoming.unbounded_send(Ok(message.to_string())).unwrap();
+        };
+        let mut recv = async || -> Value {
+            let line = tokio::time::timeout(TIMEOUT, outgoing.next())
+                .await
+                .expect("peer should answer in time")
+                .expect("peer closed its output");
+            serde_json::from_str(&line).unwrap()
+        };
+        send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": 1, "clientCapabilities": {"elicitation": {"url": {}, "form": {}}}},
+        }));
+        assert_eq!(recv().await["result"]["protocolVersion"], 1);
+        for (id, method_id) in [(json!(3), "url"), (json!("3"), "form")] {
+            send(json!({
+                "jsonrpc": "2.0", "id": id, "method": "authenticate",
+                "params": {"methodId": method_id},
+            }));
+        }
+
+        let first = recv().await;
+        let second = recv().await;
+        for challenge in [first, second] {
+            assert_eq!(challenge["method"], "elicitation/create");
+            let expected = if challenge["params"]["mode"] == "url" {
+                json!(3)
+            } else {
+                assert_eq!(challenge["params"]["mode"], "form");
+                json!("3")
+            };
+            assert_eq!(challenge["params"]["requestId"], expected, "hops: {hops:?}");
+            send(json!({
+                "jsonrpc": "2.0", "id": challenge["id"], "result": {"action": "accept"},
+            }));
+        }
+        let responses = [recv().await, recv().await];
+        for id in [json!(3), json!("3")] {
+            assert!(
+                responses
+                    .iter()
+                    .any(|r| r["id"] == id && r["result"] == json!({}))
+            );
+        }
+        if hops.is_some() {
+            send(json!({
+                "jsonrpc": "2.0", "id": 4, "method": "authenticate",
+                "params": {"methodId": "unknown"},
+            }));
+            assert_eq!(
+                recv().await,
+                json!({"jsonrpc": "2.0", "id": 4, "result": {}})
+            );
+        }
+        drop(incoming);
+        tokio::time::timeout(TIMEOUT, task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+}

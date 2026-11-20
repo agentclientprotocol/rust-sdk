@@ -1082,7 +1082,7 @@ where
             .name(format!("conductor-to-component({component_index})"))
             // Intercept messages sent by the proxy.
             .on_receive_dispatch(
-                async move |dispatch: Dispatch, _connection| {
+                async move |dispatch: Dispatch, connection| {
                     MatchDispatch::new(dispatch)
                         .if_dispatch(async |dispatch: SuccessorDispatch| {
                             //                         ------------------
@@ -1114,7 +1114,8 @@ where
                                 })
                         })
                         .await
-                        .otherwise(async |dispatch| {
+                        .otherwise(async |mut dispatch| {
+                            connection.translate_elicitation_request_id(Proxy, &mut dispatch)?;
                             // Other messagrs send by the proxy go its predecessor.
                             // As in the previous handler:
                             //
@@ -1182,7 +1183,7 @@ where
                 // keep `initialize` cancellable like every other forwarded
                 // request.
                 proxy
-                    .send_request(request)
+                    .prepare_forwarded_request_to(Proxy, request, &responder)
                     .forward_cancellation_from(responder.cancellation())
                     .on_receiving_result(async move |result| {
                         tracing::debug!(
@@ -1723,7 +1724,8 @@ impl HostRole for Agent {
                 .on_receive_dispatch(
                     {
                         let mut conductor_tx = runner.conductor_tx.clone();
-                        async move |dispatch: Dispatch, _cx| {
+                        async move |mut dispatch: Dispatch, cx| {
+                            cx.translate_elicitation_request_id(Agent, &mut dispatch)?;
                             conductor_tx
                                 .send(ConductorMessage::RightToLeft {
                                     source_component_index: SourceComponentIndex::Successor,
@@ -1826,7 +1828,8 @@ impl HostRole for Proxy {
             .if_dispatch_from(Agent, {
                 // Messages from our successor arrive already unwrapped
                 // (RemoteRoleStyle::Successor strips the SuccessorMessage envelope).
-                async |message: Dispatch| {
+                async |mut message: Dispatch| {
+                    client_connection.translate_elicitation_request_id(Agent, &mut message)?;
                     tracing::debug!(
                         method = ?message.method(),
                         "ConductorToConductor::handle_dispatch - matched Agent"

@@ -871,7 +871,7 @@ where
         // Send the "new session" request to the agent.
         let sent = connection
             .raw_connection()
-            .send_ordered_request_to::<Raw, _, _>(Agent, request);
+            .prepare_forwarded_request_to(Agent, request, &responder);
         let sent = sent.forward_cancellation_from(responder.cancellation());
 
         sent.on_receiving_ok_result(responder, {

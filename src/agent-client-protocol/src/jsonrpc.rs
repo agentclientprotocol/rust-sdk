@@ -2212,6 +2212,7 @@ struct PendingReply {
     cancellation_disarm: SentRequestCancellationDisarm,
     ordering: ResponseOrdering,
     response_route_hook: Option<ResponseRouteHook>,
+    forwarded_from: Option<(RawJsonRpcId, RequestCancellation)>,
     /// Set only by `v2::ConnectionTo::send_initialize`, whose typed outcome
     /// reports a lower-version initialize response as a success.
     accepts_lower_initialize_version: bool,
@@ -2379,6 +2380,14 @@ impl PendingRepliesRegistrar {
                 Ok(())
             }
         }
+    }
+
+    fn forwarded_request_id(&self, peer: RoleId, id: &RawJsonRpcId) -> Option<RawJsonRpcId> {
+        let inner = self.inner.upgrade()?;
+        let inner = inner.lock().expect("pending replies mutex poisoned");
+        let reply = inner.replies.get(id)?;
+        let (original_id, cancellation) = reply.forwarded_from.as_ref()?;
+        (reply.role_id == peer && !cancellation.is_cancelled()).then(|| original_id.clone())
     }
 
     fn remove(&self, id: &RawJsonRpcId) -> Option<PendingReply> {
@@ -3905,7 +3914,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     {
         match message {
             Dispatch::Request(request, responder) => self
-                .send_ordered_request_to::<Raw, _, _>(peer, request)
+                .prepare_forwarded_request_to(peer, request, &responder)
                 .forward_response_to(responder),
             Dispatch::Notification(notification) => {
                 // `$/cancel_request` is connection-scoped: its `requestId` was
@@ -3928,6 +3937,55 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                 router.route_with_result(result)
             }
         }
+    }
+
+    /// Prepare a forwarded request and record the original request ID before publication.
+    #[doc(hidden)]
+    pub fn prepare_forwarded_request_to<Peer: Role, Req: JsonRpcRequest, Q: Protocol>(
+        &self,
+        peer: Peer,
+        request: Req,
+        responder: &Responder<Req::Response, Q>,
+    ) -> PreparedRequest<Req::Response>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
+        let mut prepared = self.prepare_request_to(peer, request);
+        prepared.publication.pending_reply.forwarded_from =
+            Some((responder.raw_id().clone(), responder.cancellation()));
+        prepared
+    }
+
+    /// Restore the originator's ID in a request-scoped elicitation received from this peer.
+    ///
+    /// A reference that cannot be resolved on this hop is invalid. Forwarding
+    /// it unchanged could accidentally match an unrelated upstream request.
+    #[doc(hidden)]
+    pub fn translate_elicitation_request_id<Peer: Role>(
+        &self,
+        peer: Peer,
+        message: &mut Dispatch,
+    ) -> Result<(), crate::Error>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
+        let Dispatch::Request(request, _) = message else {
+            return Ok(());
+        };
+        if request.method() != "elicitation/create" || request.params.get("sessionId").is_some() {
+            return Ok(());
+        }
+        let Some(reference) = request.params.get_mut("requestId") else {
+            return Ok(());
+        };
+        let id =
+            RawJsonRpcId::deserialize(&*reference).map_err(|_| crate::Error::invalid_params())?;
+        let id = self
+            .pending_replies
+            .forwarded_request_id(peer.role_id(), &id)
+            .ok_or_else(|| crate::Error::invalid_params().data("Unknown forwarded request ID"))?;
+        *reference = serde_json::to_value(id).expect("a JSON-RPC ID is JSON serializable");
+        Ok(())
     }
 
     /// Send an outgoing request and return a [`SentRequest`] for handling the reply.
@@ -4208,6 +4266,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             cancellation_disarm: cancellation.disarm_handle(),
             ordering: response_ordering.clone(),
             response_route_hook,
+            forwarded_from: None,
             accepts_lower_initialize_version: false,
         };
         let message = if self.is_incoming_closing() {
@@ -4984,6 +5043,7 @@ impl ResponseRouter<serde_json::Value> {
             cancellation_disarm,
             ordering,
             response_route_hook,
+            forwarded_from: _,
             accepts_lower_initialize_version: _,
         } = pending_reply;
         let reply_target = ResponseReplyTarget {

@@ -5,7 +5,6 @@ use futures::{StreamExt as _, future};
 #[cfg(feature = "unstable_protocol_v2")]
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::Raw;
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::RawJsonRpcId;
 use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
@@ -1709,12 +1708,12 @@ async fn forward_proxy_dispatch(
             if request.method() == PROXY_METHOD_NAMES.proxy_initialize =>
         {
             request.method = "initialize".to_string();
-            cx.send_ordered_request_to::<Raw, _, _>(Agent, request)
+            cx.prepare_forwarded_request_to(Agent, request, &responder)
                 .forward_response_to(responder)?;
             return Ok(Handled::Yes);
         }
         Dispatch::Request(request, responder) if request.method() == "session/new" => {
-            let sent = cx.send_ordered_request_to::<Raw, _, _>(Agent, request);
+            let sent = cx.prepare_forwarded_request_to(Agent, request, &responder);
             // The dynamic-handler hook below means we cannot use
             // `forward_response_to`, so wire up cancellation forwarding
             // explicitly to keep `session/new` cancellable like every
@@ -1747,7 +1746,8 @@ async fn forward_proxy_dispatch(
             cx.send_proxied_message_to(Agent, message)
         })
         .await
-        .if_dispatch_from(Agent, async |message: Dispatch| {
+        .if_dispatch_from(Agent, async |mut message: Dispatch| {
+            cx.translate_elicitation_request_id(Agent, &mut message)?;
             cx.send_proxied_message_to(Client, message)
         })
         .await
