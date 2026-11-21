@@ -1429,9 +1429,10 @@ Client projections should also follow these rules:
   in the child's `background` list.
 - Adjacent text blocks form one continuous text. Join them without a
   separator before rendering, in messages and in tool call content.
-- Tool call titles, session titles, and the names and descriptions of
-  commands and config options are plain text. Do not render them as Markdown.
-  A plan entry's `content` may contain Markdown.
+- Tool call titles, session titles, and the names of commands and config
+  options are plain text. Do not render them as Markdown. A plan entry's
+  `content` may contain Markdown. As of schema 1.21.2, so may the
+  descriptions listed under [Schema 1.21](#schema-121).
 - Answer `elicitation/create` with `-32602` when you cannot render the form.
 - Follow a `nextCursor` from `session/list` with the same `cwd` you sent
   before.
@@ -1467,4 +1468,21 @@ Schema 1.21 changes Rust types, not the wire format:
   Both conversions accept the unboxed payload. When matching an owned variant,
   `*other` or `*diff` gives you the owned payload again. The v1 types are unchanged.
 
-There are no new rules for agents or clients.
+Schema 1.21.2 changes one rule for clients. These `description` fields in
+`v2::schema` may contain Markdown, like a text block:
+
+- An authentication method: `AuthMethodAgent::description` and
+  `AuthMethodTerminal::description`.
+- A command: `Command::description`, and `Skill::description` under
+  `unstable_agent_skills`.
+- A config option and each of its values: `SessionConfigOption::description`
+  and `SessionConfigSelectOption::description`.
+- A permission request: `RequestPermissionRequest::description`.
+- A subagent: `SubagentUpdate::description`.
+
+Schema 1.20 listed the descriptions of commands and config options as plain
+text. A client that renders Markdown in text blocks can now render these
+fields the same way. Names, titles, and every other `description`, such as
+those in an elicitation form, are still plain text.
+
+There are no new rules for agents. An agent can use Markdown in these fields.
