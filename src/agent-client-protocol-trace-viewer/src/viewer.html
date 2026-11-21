@@ -322,8 +322,12 @@
 
                     render();
                 } catch (error) {
-                    document.getElementById("diagram-container").innerHTML =
-                        `<div class="error-message">Failed to load trace: ${error.message}</div>`;
+                    const message = document.createElement("div");
+                    message.className = "error-message";
+                    message.textContent = `Failed to load trace: ${error.message}`;
+                    document
+                        .getElementById("diagram-container")
+                        .replaceChildren(message);
                 }
             }
 
@@ -408,7 +412,7 @@
                 // Draw swimlane headers and base lines
                 components.forEach((comp, i) => {
                     const x = PADDING + i * SWIMLANE_WIDTH + SWIMLANE_WIDTH / 2;
-                    svg += `<text x="${x}" y="${PADDING + 15}" text-anchor="middle" class="swimlane-header">${comp}</text>`;
+                    svg += `<text x="${x}" y="${PADDING + 15}" text-anchor="middle" class="swimlane-header">${escapeHtml(String(comp))}</text>`;
                     // Draw vertical line
                     svg += `<line x1="${x}" y1="${HEADER_HEIGHT}" x2="${x}" y2="${height}" class="swimlane-line"/>`;
                 });
@@ -520,8 +524,11 @@
 
                         // Label
                         const labelX = (fromX + toX) / 2;
-                        const label = event.method || event.type;
-                        svg += `<text x="${labelX}" y="${y - 8}" text-anchor="middle" class="message-label" style="fill: ${pairColor}">${truncate(label, 20)}</text>`;
+                        const label = truncate(
+                            String(event.method || event.type),
+                            20,
+                        );
+                        svg += `<text x="${labelX}" y="${y - 8}" text-anchor="middle" class="message-label" style="fill: ${pairColor}">${escapeHtml(label)}</text>`;
 
                         // Content preview for various message types
                         const contentPreview = getContentPreview(event);
