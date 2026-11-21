@@ -1,3 +1,5 @@
+//! Exercises typed dispatch handlers that modify, retry, or decline a message.
+
 use agent_client_protocol::Role;
 use agent_client_protocol::role::UntypedRole;
 use agent_client_protocol::util::MatchDispatch;

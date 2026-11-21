@@ -40,10 +40,6 @@ use crate::v2::schema as v2;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(untagged)]
-#[allow(
-    clippy::exhaustive_enums,
-    reason = "JSON-RPC defines exactly these ID types"
-)]
 pub enum RawJsonRpcId {
     /// The JSON-RPC `null` ID.
     Null,

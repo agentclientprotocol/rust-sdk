@@ -1,4 +1,4 @@
-//! Direct OneshotTransport adapter; no hidden initialization or byte bridge.
+//! Direct `OneshotTransport` adapter; no hidden initialization or byte bridge.
 
 use ::rmcp_3 as rmcp;
 use acp::{
@@ -23,7 +23,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 /// Tracks the actual user futures, not just the rmcp actor. rmcp may detach
-/// handler tasks internally; close() alone does not prove they have been dropped.
+/// handler tasks internally; `close()` alone does not prove they have been dropped.
 struct OperationService<S> {
     app: Arc<S>,
     cancel: CancellationToken,

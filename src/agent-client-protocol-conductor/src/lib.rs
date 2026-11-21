@@ -135,7 +135,7 @@ impl InstantiateProxiesAndAgent for CommandLineComponents {
     }
 }
 
-/// Wrapper to implement WriteEvent for TraceHandle.
+/// Wrapper to implement `WriteEvent` for `TraceHandle`.
 struct TraceHandleWriter(agent_client_protocol_trace_viewer::TraceHandle);
 
 impl trace::WriteEvent for TraceHandleWriter {
@@ -177,6 +177,7 @@ pub struct ConductorArgs {
     #[arg(long)]
     pub serve: bool,
 
+    /// Role to run the conductor in and the components to start in its chain.
     #[command(subcommand)]
     pub command: ConductorCommand,
 }
@@ -209,7 +210,12 @@ pub enum ConductorCommand {
 }
 
 impl ConductorArgs {
-    /// Main entry point that sets up tracing and runs the conductor
+    /// Set up tracing and run the conductor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the debug log or trace file cannot be created,
+    /// a component command cannot be parsed, or the conductor connection fails.
     pub async fn main(self) -> anyhow::Result<()> {
         let pid = std::process::id();
         let cwd = std::env::current_dir()

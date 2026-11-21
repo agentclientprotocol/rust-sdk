@@ -6,7 +6,10 @@
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::*,
+    model::{
+        CallToolResult, ContentBlock, Implementation, ProtocolVersion, ServerCapabilities,
+        ServerConfig,
+    },
     tool, tool_handler, tool_router,
 };
 use serde::{Deserialize, Serialize};
@@ -48,7 +51,14 @@ impl EchoServer {
     }
 }
 
-#[allow(unknown_lints, clippy::unused_async_trait_impl)]
+#[allow(
+    unknown_lints,
+    reason = "unused_async_trait_impl is newer than the MSRV"
+)]
+#[expect(
+    clippy::unused_async_trait_impl,
+    reason = "tool_handler generates an async list_tools method"
+)]
 #[tool_handler]
 impl ServerHandler for EchoServer {
     fn get_info(&self) -> ServerConfig {

@@ -157,6 +157,12 @@ impl ClientProtocolConnector {
 
     /// Connect to an agent produced by `agent` using the highest configured
     /// compatible protocol implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns Invalid request (`-32600`) if no implementation is configured.
+    /// Propagates failures while exchanging initialization messages or driving
+    /// the selected client and agent connections.
     pub async fn connect_to<C>(
         mut self,
         mut agent: impl FnMut() -> C + Send + 'static,
@@ -164,30 +170,14 @@ impl ClientProtocolConnector {
     where
         C: ConnectTo<Client>,
     {
-        let supported = SupportedClientProtocols {
-            v1: self.v1.is_some(),
-            v2: self.v2.is_some(),
-        };
-        let Some(selected) = supported.highest_configured() else {
-            return Err(crate::Error::invalid_request()
-                .data("client protocol connector has no configured ACP protocol implementations"));
-        };
-
-        match selected {
-            ClientProtocol::V1 => {
-                let client = self
-                    .v1
-                    .as_mut()
-                    .expect("selected protocol is configured")
-                    .create();
-                connect_client_protocol(ClientProtocol::V1, client, agent()).await
+        match (self.v1.as_mut(), self.v2.as_mut()) {
+            (None, None) => Err(crate::Error::invalid_request()
+                .data("client protocol connector has no configured ACP protocol implementations")),
+            (Some(v1), None) => {
+                connect_client_protocol(ClientProtocol::V1, v1.create(), agent()).await
             }
-            ClientProtocol::V2 => {
-                let client = self
-                    .v2
-                    .as_mut()
-                    .expect("selected protocol is configured")
-                    .create();
+            (v1, Some(v2)) => {
+                let client = v2.create();
                 let agent_connection = RunningProtocolPeer::new(agent());
                 let (client, initialize) =
                     start_client_protocol(ClientProtocol::V2, client).await?;
@@ -199,22 +189,19 @@ impl ClientProtocolConnector {
                     send_initialize_and_receive(client, agent_connection, initialize).await?;
 
                 if initialize_response_negotiated_v1(&initialize_response)
-                    && let Some(v1) = self.v1.as_mut()
+                    && let Some(v1) = v1
                 {
                     let fallback_client = v1.create();
                     let (fallback_client, fallback_initialize) =
                         start_client_protocol(ClientProtocol::V1, fallback_client).await?;
-                    let v1_initialize =
-                        validated_initialize_params::<InitializeRequest>(&fallback_initialize)?;
+                    let (id, v1_initialize) = initialize_request_parts(&fallback_initialize)?;
+                    parse_initialize_params::<InitializeRequest>(v1_initialize)?;
 
                     if v2_initialize_as_v1
                         .as_ref()
-                        .is_ok_and(|v2_initialize| v2_initialize == &v1_initialize)
+                        .is_ok_and(|v2_initialize| v2_initialize == v1_initialize)
                     {
-                        let fallback_response = initialize_response.with_id(
-                            initialize_request_id(&fallback_initialize)
-                                .expect("validated initialize request has an id"),
-                        );
+                        let fallback_response = initialize_response.with_id(id.clone());
                         // The v2 implementation will never receive its initialize response once
                         // the matching v1 implementation takes over this connection. Drop its
                         // future and channels before running the v1 session so any resources it
@@ -692,9 +679,9 @@ fn requests_protocol_v2(
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
-fn initialize_request_params(
+fn initialize_request_parts(
     message: &RawJsonRpcMessage,
-) -> Result<&serde_json::Map<String, serde_json::Value>, crate::Error> {
+) -> crate::Result<(&RawJsonRpcId, &serde_json::Map<String, serde_json::Value>)> {
     let RawJsonRpcMessage::Request(request) = message else {
         return Err(
             crate::Error::invalid_request().data("first ACP message must be an initialize request")
@@ -711,23 +698,14 @@ fn initialize_request_params(
     if !params.contains_key("protocolVersion") {
         return Err(invalid_initialize_protocol_version());
     }
-    Ok(params)
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
-fn validated_initialize_params<T: DeserializeOwned>(
-    message: &RawJsonRpcMessage,
-) -> Result<serde_json::Map<String, serde_json::Value>, crate::Error> {
-    let params = initialize_request_params(message)?;
-    parse_initialize_params::<T>(params)?;
-    Ok(params.clone())
+    Ok((&request.id, params))
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
 fn normalize_v2_initialize_params_for_reuse(
     message: &RawJsonRpcMessage,
 ) -> Result<serde_json::Map<String, serde_json::Value>, crate::Error> {
-    let params = initialize_request_params(message)?;
+    let (_, params) = initialize_request_parts(message)?;
     let requested = params
         .get("protocolVersion")
         .cloned()
@@ -1369,28 +1347,6 @@ impl ClientProtocol {
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SupportedClientProtocols {
-    v1: bool,
-    v2: bool,
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
-impl SupportedClientProtocols {
-    fn highest_configured(self) -> Option<ClientProtocol> {
-        if self.v2 {
-            return Some(ClientProtocol::V2);
-        }
-
-        if self.v1 {
-            return Some(ClientProtocol::V1);
-        }
-
-        None
-    }
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
 async fn start_client_protocol(
     protocol: ClientProtocol,
     client: DynConnectTo<Agent>,
@@ -1463,14 +1419,6 @@ fn ensure_client_initialize_request(
     }
 
     Ok(())
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
-fn initialize_request_id(message: &RawJsonRpcMessage) -> Option<RawJsonRpcId> {
-    let RawJsonRpcMessage::Request(request) = message else {
-        return None;
-    };
-    Some(request.id.clone())
 }
 
 #[cfg(feature = "unstable_protocol_v2")]

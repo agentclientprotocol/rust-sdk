@@ -1150,10 +1150,10 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
 
 #[derive(Clone)]
 struct ParkedMcpServer {
-    started_tx: mpsc::UnboundedSender<RawJsonRpcId>,
-    stopped_tx: mpsc::UnboundedSender<RawJsonRpcId>,
-    dropped_tx: mpsc::UnboundedSender<()>,
-    late_tx: mpsc::UnboundedSender<agent_client_protocol::ConnectionTo<role::mcp::Client>>,
+    started: mpsc::UnboundedSender<RawJsonRpcId>,
+    stopped: mpsc::UnboundedSender<RawJsonRpcId>,
+    dropped: mpsc::UnboundedSender<()>,
+    late: mpsc::UnboundedSender<agent_client_protocol::ConnectionTo<role::mcp::Client>>,
 }
 
 impl McpServerConnect<Conductor> for ParkedMcpServer {
@@ -1187,11 +1187,11 @@ impl<T> Drop for ProbeOnDrop<T> {
 
 impl ConnectTo<role::mcp::Client> for ParkedMcpComponent {
     async fn connect_to(self, client: impl ConnectTo<role::mcp::Server>) -> Result<(), Error> {
-        let started_tx = self.0.started_tx;
-        let stopped_tx = self.0.stopped_tx;
-        let late_tx = self.0.late_tx;
+        let started_tx = self.0.started;
+        let stopped_tx = self.0.stopped;
+        let late_tx = self.0.late;
         let _backend_dropped = ProbeOnDrop {
-            sender: self.0.dropped_tx,
+            sender: self.0.dropped,
             value: Some(()),
         };
         role::mcp::Server
@@ -1314,10 +1314,10 @@ async fn mcp_request_cancellation_crosses_proxy_and_tears_down_backend() -> Resu
         );
     let proxy = Proxy.v1().with_mcp_server(McpServer::new(
         ParkedMcpServer {
-            started_tx,
-            stopped_tx,
-            dropped_tx,
-            late_tx,
+            started: started_tx,
+            stopped: stopped_tx,
+            dropped: dropped_tx,
+            late: late_tx,
         },
         NullRun,
     ));

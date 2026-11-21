@@ -1,3 +1,5 @@
+//! Checks how `proxy/initialize` selects the proxy implementation and how the router handles invalid first messages.
+
 #![cfg(feature = "unstable_protocol_v2")]
 
 use agent_client_protocol::RawJsonRpcId;

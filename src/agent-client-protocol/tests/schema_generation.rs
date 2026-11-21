@@ -1,3 +1,5 @@
+//! Checks that the `schemars` feature exposes JSON schemas for the versioned protocol types.
+
 #![cfg(feature = "schemars")]
 
 use agent_client_protocol::v1;

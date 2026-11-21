@@ -29,26 +29,42 @@ pub enum TestyCommand {
     Greet,
 
     /// Echoes the given message back as the response.
-    Echo { message: String },
+    Echo {
+        /// Text to return unchanged.
+        message: String,
+    },
 
     /// Runs a deterministic scenario that exercises part of the ACP surface.
-    RunScenario { scenario: TestyScenario },
+    RunScenario {
+        /// Scenario to run in the current session.
+        scenario: TestyScenario,
+    },
 
     /// Invokes an MCP tool and returns the result.
     /// The agent must have been given MCP servers in the `NewSessionRequest`.
     CallTool {
+        /// Name of the session's MCP server that provides the tool.
         server: String,
+        /// Tool name on that server.
         tool: String,
+        /// JSON arguments for the tool call.
         #[serde(default)]
         params: serde_json::Value,
     },
 
     /// Lists tools from the named MCP server.
-    ListTools { server: String },
+    ListTools {
+        /// Name of the session's MCP server to query.
+        server: String,
+    },
 }
 
 impl TestyCommand {
     /// Serialize this command to a JSON string suitable for use as prompt text.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a command cannot be encoded as JSON.
     #[must_use]
     pub fn to_prompt(&self) -> String {
         serde_json::to_string(self).expect("TestyCommand serialization should not fail")

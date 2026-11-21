@@ -1,3 +1,5 @@
+//! Checks that the conductor routes initialization and subsequent requests to the selected proxy version.
+
 #![cfg(feature = "unstable_protocol_v2")]
 
 use std::sync::{

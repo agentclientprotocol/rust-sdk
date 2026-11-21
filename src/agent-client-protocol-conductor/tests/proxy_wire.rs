@@ -126,7 +126,7 @@ async fn initialize(client: &mut Endpoint, agent: &mut Endpoint, version: u16) {
 }
 
 /// Errors and results whose bytes must survive the chain unchanged. Each is
-/// written in serde_json's compact form, so a byte comparison of the forwarded
+/// written in `serde_json`'s compact form, so a byte comparison of the forwarded
 /// line is meaningful.
 const OUTCOMES: &[&str] = &[
     r#""error":{"code":-32042,"message":"custom failure","data":{"nested":{"list":[1,"two",null,true,-0.5]},"text":"é ✓ \"quoted\"","_meta":{"k":"v"}}}"#,

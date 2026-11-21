@@ -169,6 +169,8 @@ where
 
     /// Build a draft protocol v2 session using the current working directory.
     ///
+    /// # Errors
+    ///
     /// Returns an error if the current directory cannot be determined.
     pub fn build_session_cwd(&self) -> Result<SessionBuilder<Counterpart>, crate::Error> {
         let cwd = std::env::current_dir().map_err(|error| {
@@ -302,6 +304,11 @@ where
     /// `McpOverAcpPolyfill` must sit in front of it; otherwise a conforming
     /// agent rejects the setup request with `-32602`. This method does not
     /// check the agent's capabilities.
+    ///
+    /// # Errors
+    ///
+    /// Returns Invalid params (`-32602`) if the request already declares that
+    /// server name, or a registration error if the connection no longer accepts handlers.
     #[cfg(feature = "unstable_mcp_over_acp")]
     pub fn with_mcp_server<McpRun>(
         mut self,
@@ -373,6 +380,11 @@ where
     ///
     /// The callback runs outside the ordered response barrier, so it may wait
     /// for later connection traffic without deadlocking the dispatch loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the response handler cannot be scheduled.
+    /// A downstream setup error is forwarded to `responder`.
     pub fn on_proxy_session_start<F, Fut>(
         self,
         responder: Responder<v2::NewSessionResponse, V2>,
@@ -472,6 +484,11 @@ where
     /// `McpOverAcpPolyfill` must sit in front of it; otherwise a conforming
     /// agent rejects the setup request with `-32602`. This method does not
     /// check the agent's capabilities.
+    ///
+    /// # Errors
+    ///
+    /// Returns Invalid params (`-32602`) for a duplicate server name, or an
+    /// error if the connection cannot register the MCP handler.
     #[cfg(feature = "unstable_mcp_over_acp")]
     pub fn with_mcp_server<McpRun>(
         mut self,
@@ -547,6 +564,11 @@ where
     ///
     /// The callback runs outside the ordered response barrier, so it may wait
     /// for later connection traffic without deadlocking the dispatch loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the response handler cannot be scheduled.
+    /// A downstream fork error is forwarded to `responder`.
     pub fn on_proxy_session_start<F, Fut>(
         self,
         responder: Responder<v2::ForkSessionResponse, V2>,
@@ -642,6 +664,11 @@ where
     /// `McpOverAcpPolyfill` must sit in front of it; otherwise a conforming
     /// agent rejects the setup request with `-32602`. This method does not
     /// check the agent's capabilities.
+    ///
+    /// # Errors
+    ///
+    /// Returns Invalid params (`-32602`) for a duplicate server name, or an
+    /// error if the connection cannot register the MCP handler.
     #[cfg(feature = "unstable_mcp_over_acp")]
     pub fn with_mcp_server<McpRun>(
         mut self,
@@ -718,6 +745,11 @@ where
     /// plus that response. The callback runs outside the ordered response
     /// barrier, so it may wait for later connection traffic without
     /// deadlocking the dispatch loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if replay routing cannot be registered or the response
+    /// handler cannot be scheduled. A downstream resume error goes to `responder`.
     pub fn on_proxy_session_start<F, Fut>(
         mut self,
         responder: Responder<v2::ResumeSessionResponse, V2>,
@@ -940,6 +972,11 @@ where
     /// to the cancelled work that way without waiting for `$/cancel_request`.
     ///
     /// See <https://agentclientprotocol.com/protocol/v2/prompt-lifecycle#cancellation>.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cancellation notification cannot be encoded or
+    /// queued. Success does not mean the agent has finished cancelling.
     pub fn cancel_active_work(&self) -> Result<(), crate::Error> {
         self.connection.send_notification_to(
             Agent,

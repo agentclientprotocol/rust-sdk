@@ -1,3 +1,5 @@
+//! Checks which runner failures stay local to session setup and which terminate the connection.
+
 #![cfg(feature = "unstable_mcp_over_acp")]
 
 use agent_client_protocol::{

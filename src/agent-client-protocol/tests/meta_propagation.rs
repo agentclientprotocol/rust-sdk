@@ -1,3 +1,5 @@
+//! Checks that prompts and forwarded messages preserve extension data in the wire `_meta` field.
+
 use agent_client_protocol::JsonRpcMessage;
 use agent_client_protocol::schema::SuccessorMessage;
 #[cfg(feature = "unstable_mcp_over_acp")]

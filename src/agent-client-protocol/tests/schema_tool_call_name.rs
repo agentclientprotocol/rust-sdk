@@ -1,3 +1,5 @@
+//! Checks how tool-call names are set, updated, and carried in v1 and v2 session notifications.
+
 use agent_client_protocol::JsonRpcMessage;
 use agent_client_protocol::v1::schema::{ToolCall, ToolCallUpdateFields};
 use serde_json::json;

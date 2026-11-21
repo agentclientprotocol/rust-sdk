@@ -103,6 +103,11 @@ impl HttpClient {
     /// unless the path already ends with `/acp`.
     ///
     /// Use [`Self::builder`] to customize headers, TLS, proxies, or timeouts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid URL, an unsupported scheme, or a
+    /// failure to build the underlying HTTP client. See [`HttpClientBuilder::build`].
     pub fn new(base_url: impl AsRef<str>) -> Result<Self, HttpClientError> {
         Self::builder(base_url).build()
     }
@@ -112,6 +117,11 @@ impl HttpClient {
     /// Use this when connecting to a server configured with a custom
     /// `ServerOptions::path`. Use [`Self::builder_with_endpoint`] to also
     /// customize the HTTP client configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid URL, an unsupported scheme, or a
+    /// failure to build the underlying HTTP client.
     pub fn with_endpoint(endpoint: impl AsRef<str>) -> Result<Self, HttpClientError> {
         Self::builder_with_endpoint(endpoint).build()
     }
@@ -161,6 +171,11 @@ impl HttpClient {
     /// [`Self::builder`] or [`Self::builder_with_endpoint`] so this transport can
     /// configure HTTP/1.1 and disable handshake redirects before building the
     /// underlying client.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HttpClientError::WebSocketRequiresBuilder`] for `ws` or
+    /// `wss`, or a URL error for an invalid URL or any other unsupported scheme.
     pub fn from_http_client(
         endpoint: impl AsRef<str>,
         http: reqwest::Client,
@@ -244,6 +259,11 @@ impl HttpClientBuilder {
     ///
     /// Accepts `http`, `https`, `ws`, and `wss` URLs. No connection is opened
     /// until the resulting [`HttpClient`] is connected through [`ConnectTo`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the endpoint's URL or scheme error, or [`HttpClientError::Reqwest`]
+    /// if reqwest cannot build a client with the supplied configuration.
     pub fn build(self) -> Result<HttpClient, HttpClientError> {
         let endpoint = self.endpoint?;
         let http = if is_websocket_url(&endpoint) {

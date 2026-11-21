@@ -65,7 +65,7 @@ impl<Message, Close> IncomingHandlers<Message, Close> {
 /// This actor handles JSON-RPC protocol semantics:
 /// - Routes responses to pending request awaiters
 /// - Routes requests/notifications to registered handlers
-/// - Converts RawJsonRpcMessage requests/notifications to UntypedMessage for handlers
+/// - Converts `RawJsonRpcMessage` requests/notifications to `UntypedMessage` for handlers
 ///
 /// This is the protocol layer - it has no knowledge of how messages arrived.
 pub(super) async fn incoming_protocol_actor<Counterpart: Role>(

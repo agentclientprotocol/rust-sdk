@@ -251,7 +251,7 @@ async fn test_three_components_all_proxies_get_initialize_proxy()
     Ok(())
 }
 
-/// A proxy that incorrectly forwards v1::InitializeProxyRequest instead of InitializeRequest.
+/// A proxy that incorrectly forwards `v1::InitializeProxyRequest` instead of `InitializeRequest`.
 /// This tests that the conductor rejects such malformed forwarding.
 struct BadProxy;
 
@@ -280,7 +280,7 @@ impl ConnectTo<Conductor> for BadProxy {
     }
 }
 
-/// Run test with explicit proxy and agent DynComponents (for mixing different types)
+/// Run the test with type-erased proxy and agent components.
 async fn run_bad_proxy_test(
     proxies: Vec<DynConnectTo<Conductor>>,
     agent: DynConnectTo<Client>,

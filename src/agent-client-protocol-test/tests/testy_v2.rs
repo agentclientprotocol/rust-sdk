@@ -1,3 +1,5 @@
+//! Exercises Testy's v2 prompt lifecycle, replay, cancellation, and retries over its protocol router.
+
 #![cfg(feature = "unstable_protocol_v2")]
 
 use std::{path::PathBuf, time::Duration};

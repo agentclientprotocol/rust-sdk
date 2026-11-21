@@ -1,4 +1,4 @@
-//! Tests for running McpServer as a standalone MCP server (not part of ACP).
+//! Tests for running `McpServer` as a standalone MCP server (not part of ACP).
 //!
 //! These tests verify that `McpServer` can be used directly with MCP clients
 //! via its `ConnectTo<role::mcp::Client>` implementation.

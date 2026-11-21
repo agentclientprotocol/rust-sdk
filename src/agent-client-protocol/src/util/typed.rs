@@ -394,11 +394,20 @@ impl MatchDispatch {
     }
 
     /// Complete matching, returning `Handled::No` if no match was found.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a handler error or a failure to convert between typed and
+    /// untyped messages during an earlier match.
     pub fn done(self) -> Result<Handled<Dispatch>, crate::Error> {
         self.state
     }
 
     /// Handle messages that didn't match any previous handler.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error from an earlier match, or from `op` if it runs.
     pub async fn otherwise(
         self,
         op: impl AsyncFnOnce(Dispatch) -> Result<(), crate::Error>,
@@ -413,6 +422,11 @@ impl MatchDispatch {
     /// Finish matching, answering an unmatched request with a method not
     /// found error (`-32601`) and ignoring an unmatched notification or
     /// response.
+    ///
+    /// # Errors
+    ///
+    /// Propagates an error from an earlier match or a failure to queue the
+    /// method-not-found response.
     pub fn otherwise_ignore(self) -> Result<(), crate::Error> {
         match self.state {
             Ok(Handled::No {
@@ -776,6 +790,11 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
     }
 
     /// Complete matching, returning `Handled::No` if no match was found.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error transforming the peer's message, decoding it, or
+    /// running a matching handler.
     pub fn done(self) -> Result<Handled<Dispatch>, crate::Error> {
         match self.state {
             Ok(Handled::Yes) => Ok(Handled::Yes),
@@ -789,6 +808,10 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
     /// This is the fallback handler that receives the original untyped message if none
     /// of the typed handlers matched. You must call this method to complete the pattern
     /// matching chain and get the final result.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error from an earlier match, or from `op` if it runs.
     pub async fn otherwise(
         self,
         op: impl AsyncFnOnce(Dispatch) -> Result<(), crate::Error>,
@@ -805,6 +828,11 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
     /// This is the fallback handler that receives the original untyped message if none
     /// of the typed handlers matched. You must call this method to complete the pattern
     /// matching chain and get the final result.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error from an earlier match, or from `handler` if the
+    /// unmatched dispatch is delegated to it.
     pub async fn otherwise_delegate(
         self,
         mut handler: impl HandleDispatchFrom<Counterpart>,

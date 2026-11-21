@@ -1,6 +1,15 @@
-use std::future::Future;
+//! Fixtures for the Rust SDK's tests and documentation examples.
+//!
+//! The request and notification types here are example JSON-RPC methods,
+//! not ACP methods. For tests that need an agent that answers ACP requests,
+//! use [`testy`].
 
-use agent_client_protocol::*;
+use std::future::{Future, Ready, ready};
+
+use agent_client_protocol::{
+    Builder, Client, ConnectTo, Error, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest,
+    JsonRpcResponse, Result, Role, UntypedMessage,
+};
 use serde::{Deserialize, Serialize};
 
 pub mod arrow_proxy;
@@ -23,99 +32,134 @@ impl<R: Role> ConnectTo<R> for MockTransport {
     }
 }
 
-// Mock request/response types
+/// Parameterless `myRequest` used in request-handler examples.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MyRequest {}
 
+/// Reply to [`MyRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MyResponse {
+    /// Status text chosen by the handler.
     pub status: String,
 }
 
+/// Asks the example handler to process some text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessRequest {
+    /// Input to the operation.
     pub data: String,
 }
 
+/// Reply to [`ProcessRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessResponse {
+    /// Text returned by the processing handler.
     pub result: String,
 }
 
+/// Notification that the processing handler has started work.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessStarted {}
 
+/// Requests an analysis that can finish after the handler replies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalyzeRequest {
+    /// Text to analyze.
     pub data: String,
 }
 
+/// Immediate reply to [`AnalyzeRequest`]; [`AnalysisComplete`] carries the result later.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisStarted {
+    /// Identifier assigned to the background job.
     pub job_id: u32,
 }
 
+/// Looks up an item by ID in the response-callback examples.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryRequest {
+    /// ID of the item to look up, not the JSON-RPC request ID.
     pub id: u64,
 }
 
+/// Reply to [`QueryRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResponse {
+    /// Data returned for the requested item.
     pub data: String,
 }
 
+/// Asks the example validation handler to check some text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidateRequest {
+    /// Input to validate.
     pub data: String,
 }
 
+/// Validation outcome returned by the handler for [`ValidateRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidateResponse {
+    /// Whether the input passed validation.
     pub is_valid: bool,
+    /// Explanation of a validation failure, when provided.
     pub error: Option<String>,
 }
 
+/// Parameterless operation used as the next request in a chain of handlers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecuteRequest {}
 
+/// Reply to [`ExecuteRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecuteResponse {
+    /// Output of the example operation.
     pub result: String,
 }
 
+/// A second request type for examples that send a request from inside a handler.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OtherRequest {}
 
+/// Reply to [`OtherRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OtherResponse {
+    /// Value passed back to the calling handler.
     pub value: String,
 }
 
+/// Wraps a request for an example proxy to forward.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyRequest {
+    /// Method and params of the request being forwarded.
     pub inner_request: UntypedMessage,
 }
 
-// Mock notification types
+/// Parameterless `sessionUpdate` notification for dispatch examples.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionUpdate {}
 
+/// Reports progress while a handler is working.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusUpdate {
+    /// Human-readable progress message.
     pub message: String,
 }
 
+/// Reports that a background processing task finished.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessComplete {
+    /// Output of the completed task.
     pub result: String,
 }
 
+/// Delivers the result of an analysis acknowledged by [`AnalysisStarted`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisComplete {
+    /// Output of the analysis.
     pub result: String,
 }
 
+/// Signals that the callback has finished handling a [`QueryResponse`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryComplete {}
 
@@ -201,26 +245,35 @@ impl_jr_response_payload!(ValidateResponse, "validateRequest");
 impl_jr_response_payload!(ExecuteResponse, "executeRequest");
 impl_jr_response_payload!(OtherResponse, "otherRequest");
 
-// Mock async functions
-#[expect(clippy::unused_async)]
-pub async fn expensive_analysis(_data: &str) -> Result<String, crate::Error> {
-    Ok("analysis result".into())
+/// Stands in for async analysis and immediately returns `"analysis result"`.
+pub fn expensive_analysis(_data: &str) -> Ready<Result<String, crate::Error>> {
+    ready(Ok("analysis result".into()))
 }
 
-#[expect(clippy::unused_async)]
-pub async fn expensive_operation(_data: &str) -> Result<String, crate::Error> {
-    Ok("operation result".into())
+/// Stands in for async processing and immediately returns `"operation result"`.
+pub fn expensive_operation(_data: &str) -> Ready<Result<String, crate::Error>> {
+    ready(Ok("operation result".into()))
 }
 
+/// Stand-in for a fallible state update in documentation examples.
+///
+/// # Errors
+///
+/// This mock always succeeds.
 pub fn update_session_state(_update: &SessionUpdate) -> Result<(), crate::Error> {
     Ok(())
 }
 
+/// Stand-in for fallible request processing in documentation examples.
+///
+/// # Errors
+///
+/// This mock always returns a copy of `data`.
 pub fn process(data: &str) -> Result<String, crate::Error> {
     Ok(data.to_string())
 }
 
-// Helper to create a mock connection for examples
+/// Returns a v1 client builder for examples. No transport is connected.
 pub fn mock_connection() -> Builder<
     Client,
     agent_client_protocol::NullHandler,
@@ -231,7 +284,13 @@ pub fn mock_connection() -> Builder<
     Client.v1()
 }
 
+/// Supplies placeholder values in examples that are compiled but not run.
 pub trait Make {
+    /// Stands in for constructing a value of this type.
+    ///
+    /// # Panics
+    ///
+    /// Always panics if the example actually evaluates this call.
     fn make() -> Self;
 }
 

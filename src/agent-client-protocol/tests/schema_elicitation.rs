@@ -1,3 +1,5 @@
+//! Checks elicitation capabilities, typed request and notification routing, and responses during a prompt.
+
 use agent_client_protocol::v1::schema::{
     AgentNotification, AgentRequest, ClientCapabilities, ClientResponse,
     CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse,

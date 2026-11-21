@@ -1,3 +1,5 @@
+//! Checks that prompt `_meta` reaches the agent through a conductor's proxy chain.
+
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::util::MatchDispatchFrom;

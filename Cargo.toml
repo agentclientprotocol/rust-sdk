@@ -101,9 +101,9 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc
 
 [workspace.lints.rust]
 future_incompatible = { level = "warn", priority = -1 }
-let_underscore = "warn"
+let_underscore = { level = "warn", priority = -1 }
 missing_debug_implementations = "warn"
-# missing_docs = "warn"
+missing_docs = "deny"
 nonstandard_style = { level = "warn", priority = -1 }
 rust_2018_idioms = { level = "warn", priority = -1 }
 unused = { level = "warn", priority = -1 }
@@ -111,12 +111,7 @@ unused = { level = "warn", priority = -1 }
 [workspace.lints.clippy]
 # cargo = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
-doc_markdown = "allow"
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
+# TODO(next major): revisit by-value public signatures such as v1 ActiveSession::send_prompt.
 needless_pass_by_value = "allow"
-similar_names = "allow"
-struct_field_names = "allow"
+# Many end-to-end tests keep the whole protocol exchange in one function.
 too_many_lines = "allow"
-type_complexity = "allow"
-wildcard_imports = "allow"

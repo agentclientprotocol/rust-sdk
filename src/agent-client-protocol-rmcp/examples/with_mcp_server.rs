@@ -15,7 +15,10 @@ extern crate rmcp_3 as rmcp;
 use rmcp::{
     ErrorData as McpError, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::*,
+    model::{
+        CallToolResult, ContentBlock, Implementation, ProtocolVersion, ServerCapabilities,
+        ServerConfig,
+    },
     tool, tool_handler, tool_router,
 };
 use serde::{Deserialize, Serialize};
@@ -36,6 +39,7 @@ pub struct ExampleMcpServer {
 }
 
 impl ExampleMcpServer {
+    /// Creates an MCP server with the `echo` tool registered.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -65,7 +69,14 @@ impl ExampleMcpServer {
     }
 }
 
-#[allow(unknown_lints, clippy::unused_async_trait_impl)]
+#[allow(
+    unknown_lints,
+    reason = "unused_async_trait_impl is newer than the MSRV"
+)]
+#[expect(
+    clippy::unused_async_trait_impl,
+    reason = "tool_handler generates an async list_tools method"
+)]
 #[tool_handler]
 impl ServerHandler for ExampleMcpServer {
     fn get_info(&self) -> ServerConfig {

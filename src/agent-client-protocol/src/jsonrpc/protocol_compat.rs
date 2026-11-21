@@ -164,13 +164,9 @@ pub(crate) fn normalize_v1_initialize_request(
 #[cfg(feature = "unstable_protocol_v2")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "built once per connection; boxing the response would only make it harder to match on"
-)]
 pub enum InitializeOutcome {
     /// The agent selected v2 and the connection is ready for v2 traffic.
-    Initialized(crate::v2::schema::InitializeResponse),
+    Initialized(Box<crate::v2::schema::InitializeResponse>),
     /// The agent selected a lower protocol version.
     ///
     /// The connection stays uninitialized: a v2 connection cannot carry the
@@ -249,7 +245,7 @@ impl std::fmt::Display for InitializationVersionMismatch {
 #[non_exhaustive]
 pub enum SelectedInitializeResponse {
     /// The peer selected ACP protocol v1.
-    V1(crate::v1::schema::InitializeResponse),
+    V1(Box<crate::v1::schema::InitializeResponse>),
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
@@ -261,21 +257,20 @@ impl SelectedInitializeResponse {
             Self::V1(response) => response.protocol_version,
         }
     }
+}
 
-    /// Parse `value` as the initialization response for `version`, or return
-    /// `None` if the SDK has no response type for that version.
-    fn from_json(
-        version: crate::schema::ProtocolVersion,
-        value: serde_json::Value,
-    ) -> Option<Result<Self, crate::Error>> {
-        (version == crate::schema::ProtocolVersion::V1).then(|| {
-            <crate::v1::schema::InitializeResponse as crate::JsonRpcResponse>::from_json(
-                "initialize",
-                value,
-            )
-            .map(Self::V1)
-        })
-    }
+// The wire guard only validates this response. Box it only when returning it to the caller.
+#[cfg(feature = "unstable_protocol_v2")]
+fn parse_v1_selection(
+    version: crate::schema::ProtocolVersion,
+    value: serde_json::Value,
+) -> Option<crate::Result<crate::v1::schema::InitializeResponse>> {
+    (version == crate::schema::ProtocolVersion::V1).then(|| {
+        <crate::v1::schema::InitializeResponse as crate::JsonRpcResponse>::from_json(
+            "initialize",
+            value,
+        )
+    })
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
@@ -304,13 +299,14 @@ impl crate::JsonRpcResponse for InitializeOutcome {
         let requested = crate::schema::ProtocolVersion::V2;
         if selected == requested {
             return crate::v2::schema::InitializeResponse::from_json(method, value)
-                .map(Self::Initialized);
+                .map(|response| Self::Initialized(Box::new(response)));
         }
-        match SelectedInitializeResponse::from_json(selected, value) {
-            Some(response) if selected < requested => Ok(Self::LowerVersion(
-                InitializationVersionMismatch::new(requested, response?),
-            )),
-            _ => Err(crate::Error::invalid_request().data(format!(
+        match parse_v1_selection(selected, value) {
+            Some(response) => Ok(Self::LowerVersion(InitializationVersionMismatch::new(
+                requested,
+                SelectedInitializeResponse::V1(Box::new(response?)),
+            ))),
+            None => Err(crate::Error::invalid_request().data(format!(
                 "unsupported ACP protocol version {selected} in initialize response",
             ))),
         }
@@ -683,8 +679,7 @@ mod imp {
             let wire_version = if let Some(params) =
                 outgoing_initialize_params(mode, remote_style, &mut message)?
             {
-                set_protocol_version(params, mode.api)?;
-                validate_native_v2_initialize_request(mode, params)?;
+                prepare_initialize_request(mode, params)?;
                 self.begin_outgoing_initialize(mode)?;
                 mode.api
             } else {
@@ -804,8 +799,7 @@ mod imp {
                 let negotiated = negotiated
                     .ok_or_else(|| unexpected_initialize_response(mode.initialization_role))?;
                 if let Err(error) = ensure_matching_protocol_version(method, mode.api, negotiated)
-                    .and_then(|()| set_protocol_version(&mut value, negotiated))
-                    .and_then(|()| validate_native_v2_initialize_response(mode, &value))
+                    .and_then(|()| prepare_initialize_response(mode, &mut value))
                 {
                     self.fail_initialize();
                     return Err(error);
@@ -864,8 +858,7 @@ mod imp {
                 );
             }
 
-            set_protocol_version(&mut message.params, mode.api)?;
-            validate_native_v2_initialize_request(mode, message.params())?;
+            prepare_initialize_request(mode, &mut message.params)?;
             self.begin_incoming_initialize(mode, id)?;
             Ok(message)
         }
@@ -900,10 +893,8 @@ mod imp {
                 if accepts_lower_version
                     && mode.initialization_role == InitializationRole::Initiator
                     && wire_version < mode.api
-                    && let Some(response) = super::SelectedInitializeResponse::from_json(
-                        wire_version.as_protocol_version(),
-                        value.clone(),
-                    )
+                    && let Some(response) =
+                        super::parse_v1_selection(wire_version.as_protocol_version(), value.clone())
                 {
                     response?;
                     return Ok(InitializeResponseCheck::LowerVersion);
@@ -914,8 +905,7 @@ mod imp {
                     return Err(required_protocol_version(mode.api, wire_version));
                 }
                 ensure_matching_protocol_version("initialize", pending, wire_version)?;
-                set_protocol_version(&mut value, wire_version)?;
-                validate_native_v2_initialize_response(mode, &value)?;
+                prepare_initialize_response(mode, &mut value)?;
                 Ok(InitializeResponseCheck::Negotiated(wire_version))
             })();
 
@@ -1227,15 +1217,11 @@ mod imp {
         Ok(())
     }
 
-    // The shared guard stays fallible when v2 validation is compiled out.
-    #[cfg_attr(
-        not(feature = "unstable_protocol_v2"),
-        allow(clippy::unnecessary_wraps)
-    )]
-    fn validate_native_v2_initialize_request(
+    fn prepare_initialize_request(
         mode: AcpProtocolMode,
-        value: &serde_json::Value,
+        value: &mut serde_json::Value,
     ) -> Result<(), crate::Error> {
+        set_protocol_version(value, mode.api)?;
         #[cfg(feature = "unstable_protocol_v2")]
         if mode.initialization_role != InitializationRole::Unchecked {
             <crate::v2::schema::InitializeRequest as crate::JsonRpcMessage>::parse_message(
@@ -1243,19 +1229,14 @@ mod imp {
                 value,
             )?;
         }
-        #[cfg(not(feature = "unstable_protocol_v2"))]
-        let _ = (mode, value);
         Ok(())
     }
 
-    #[cfg_attr(
-        not(feature = "unstable_protocol_v2"),
-        allow(clippy::unnecessary_wraps)
-    )]
-    fn validate_native_v2_initialize_response(
+    fn prepare_initialize_response(
         mode: AcpProtocolMode,
-        value: &serde_json::Value,
+        value: &mut serde_json::Value,
     ) -> Result<(), crate::Error> {
+        set_protocol_version(value, mode.api)?;
         #[cfg(feature = "unstable_protocol_v2")]
         if mode.initialization_role != InitializationRole::Unchecked {
             <crate::v2::schema::InitializeResponse as crate::JsonRpcResponse>::from_json(
@@ -1263,8 +1244,6 @@ mod imp {
                 value.clone(),
             )?;
         }
-        #[cfg(not(feature = "unstable_protocol_v2"))]
-        let _ = (mode, value);
         Ok(())
     }
 
@@ -1598,43 +1577,43 @@ mod imp {
         }
 
         #[test]
-        fn initialize_outcome_parses_by_selected_version() -> Result<(), crate::Error> {
+        fn initialize_outcome_round_trips_by_selected_version() -> Result<(), crate::Error> {
+            use super::super::{
+                InitializationVersionMismatch, InitializeOutcome, SelectedInitializeResponse,
+            };
             use crate::JsonRpcResponse as _;
 
             let v2_response = v2_initialize_response(ProtocolVersion::V2);
-            assert_eq!(
-                super::super::InitializeOutcome::from_json(
-                    "initialize",
-                    serde_json::to_value(&v2_response)?
-                )?,
-                super::super::InitializeOutcome::Initialized(v2_response)
-            );
-
-            let v1_response = v1_initialize_response();
-            let outcome = super::super::InitializeOutcome::from_json(
-                "initialize",
-                serde_json::to_value(&v1_response)?,
-            )?;
+            let wire = serde_json::to_value(&v2_response)?;
+            let outcome = InitializeOutcome::from_json("initialize", wire.clone())?;
             assert_eq!(
                 outcome,
-                super::super::InitializeOutcome::LowerVersion(
-                    super::super::InitializationVersionMismatch::new(
-                        ProtocolVersion::V2,
-                        super::super::SelectedInitializeResponse::V1(v1_response),
-                    )
-                )
+                InitializeOutcome::Initialized(Box::new(v2_response))
             );
-            let super::super::InitializeOutcome::LowerVersion(mismatch) = &outcome else {
+            assert_eq!(outcome.into_json("initialize")?, wire);
+
+            let v1_response = v1_initialize_response();
+            let wire = serde_json::to_value(&v1_response)?;
+            let outcome = InitializeOutcome::from_json("initialize", wire.clone())?;
+            assert_eq!(
+                outcome,
+                InitializeOutcome::LowerVersion(InitializationVersionMismatch::new(
+                    ProtocolVersion::V2,
+                    SelectedInitializeResponse::V1(Box::new(v1_response)),
+                ))
+            );
+            let InitializeOutcome::LowerVersion(mismatch) = &outcome else {
                 unreachable!();
             };
             assert_eq!(mismatch.requested, ProtocolVersion::V2);
             assert_eq!(mismatch.selected(), ProtocolVersion::V1);
+            assert_eq!(outcome.into_json("initialize")?, wire);
 
             for value in [
                 serde_json::json!({}),
                 serde_json::json!({ "protocolVersion": 3 }),
             ] {
-                super::super::InitializeOutcome::from_json("initialize", value)
+                InitializeOutcome::from_json("initialize", value)
                     .expect_err("only v2 and lower known versions are outcomes");
             }
             Ok(())

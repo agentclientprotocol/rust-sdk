@@ -1,3 +1,5 @@
+//! Exercises provider capabilities and the typed RPCs to list, set, and disable providers.
+
 #![cfg(feature = "unstable_llm_providers")]
 
 use agent_client_protocol::schema::IndexMap;

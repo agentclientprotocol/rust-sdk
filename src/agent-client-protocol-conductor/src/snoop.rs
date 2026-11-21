@@ -1,14 +1,13 @@
 use agent_client_protocol::{Channel, ConnectTo, DynConnectTo, RawJsonRpcMessage, Role};
 use futures_concurrency::future::TryJoin;
 
+type InspectMessage =
+    dyn FnMut(&RawJsonRpcMessage) -> agent_client_protocol::Result<()> + Send + Sync;
+
 pub struct SnooperComponent<R: Role> {
     base_component: DynConnectTo<R>,
-    incoming_message: Box<
-        dyn FnMut(&RawJsonRpcMessage) -> Result<(), agent_client_protocol::Error> + Send + Sync,
-    >,
-    outgoing_message: Box<
-        dyn FnMut(&RawJsonRpcMessage) -> Result<(), agent_client_protocol::Error> + Send + Sync,
-    >,
+    incoming_message: Box<InspectMessage>,
+    outgoing_message: Box<InspectMessage>,
 }
 
 impl<R: Role> SnooperComponent<R> {

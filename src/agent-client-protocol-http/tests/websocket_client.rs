@@ -1,3 +1,5 @@
+//! Exercises WebSocket handshakes with custom DNS, TLS, proxies, redirects, and timeouts.
+
 #![cfg(feature = "client")]
 
 use std::{future::Future, sync::Arc, time::Duration};
@@ -6,7 +8,10 @@ use agent_client_protocol::{
     Channel, Client, ConnectTo, ConnectionDriver, RawJsonRpcMessage, TransportFrame,
 };
 use agent_client_protocol_http::HttpClient;
-use async_tungstenite::{tokio::accept_hdr_async, tungstenite::handshake::server::Request};
+use async_tungstenite::{
+    tokio::accept_hdr_async,
+    tungstenite::handshake::server::{Callback, ErrorResponse, Request, Response},
+};
 use futures::StreamExt;
 use serde_json::json;
 use tokio::{
@@ -94,15 +99,25 @@ async fn headers(socket: &mut (impl AsyncRead + Unpin)) -> String {
     String::from_utf8(bytes).unwrap()
 }
 
-// Tungstenite fixes the callback's error type to an unboxed HTTP response.
-#[allow(clippy::result_large_err)]
-async fn exchange(socket: impl AsyncRead + AsyncWrite + Unpin, path: &str, delay: Duration) {
-    let mut ws = accept_hdr_async(socket, |request: &Request, response| {
-        assert_eq!(request.uri().path(), path);
+struct CheckHandshake<F>(F);
+
+impl<F: FnOnce(&Request)> Callback for CheckHandshake<F> {
+    fn on_request(self, request: &Request, response: Response) -> Result<Response, ErrorResponse> {
+        (self.0)(request);
         Ok(response)
-    })
-    .await
-    .unwrap();
+    }
+}
+
+fn check_path(path: &str) -> impl Callback + '_ {
+    CheckHandshake(move |request: &Request| assert_eq!(request.uri().path(), path))
+}
+
+async fn exchange(
+    socket: impl AsyncRead + AsyncWrite + Unpin,
+    check: impl Callback + Unpin,
+    delay: Duration,
+) {
+    let mut ws = accept_hdr_async(socket, check).await.unwrap();
     let message = ws.next().await.unwrap().unwrap();
     let value: serde_json::Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
     assert_eq!(value["method"], "custom/queued");
@@ -154,7 +169,7 @@ async fn websocket_builder_honors_custom_dns_resolution() {
         .unwrap();
     successful_exchange(client, async {
         let (socket, _) = listener.accept().await.unwrap();
-        exchange(socket, "/acp", Duration::ZERO).await;
+        exchange(socket, check_path("/acp"), Duration::ZERO).await;
     })
     .await;
 }
@@ -186,7 +201,7 @@ async fn custom_roots_and_http2_feature_unification_use_http1_for_wss() {
             );
             exchange(
                 socket,
-                if exact { "/custom" } else { "/custom/acp" },
+                check_path(if exact { "/custom" } else { "/custom/acp" }),
                 Duration::ZERO,
             )
             .await;
@@ -280,21 +295,13 @@ async fn configured_proxy_carries_plain_websocket_and_custom_headers() {
         let (socket, _) = proxy.accept().await.unwrap();
         // Act as the proxy's upstream peer. An absolute URI demonstrates the
         // non-tunnel proxy path, not a direct connection or a CONNECT tunnel.
-        #[allow(clippy::result_large_err)]
-        let check = |request: &Request, response| {
+        let check = CheckHandshake(|request: &Request| {
             assert_eq!(request.uri().to_string(), "http://agent.invalid/acp");
             assert_eq!(request.headers()["x-proxy-route"], "acp");
             assert_eq!(request.headers()["upgrade"], "websocket");
             assert_eq!(request.headers()["sec-websocket-version"], "13");
-            Ok(response)
-        };
-        let mut ws = accept_hdr_async(socket, check).await.unwrap();
-        let message = ws.next().await.unwrap().unwrap();
-        let value: serde_json::Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
-        assert_eq!(value["method"], "custom/queued");
-        assert_eq!(value["params"]["probe"], 333);
-        ws.send(message).await.unwrap();
-        assert!(ws.next().await.unwrap().unwrap().is_close());
+        });
+        exchange(socket, check, Duration::ZERO).await;
     })
     .await;
 }
@@ -400,7 +407,7 @@ async fn configured_proxy_tunnels_wss_with_authentication() {
         let server = async {
             let (socket, _) = origin.accept().await.unwrap();
             let socket = tls.acceptor.accept(socket).await.unwrap();
-            exchange(socket, "/acp", Duration::ZERO).await;
+            exchange(socket, check_path("/acp"), Duration::ZERO).await;
         };
         futures::join!(tunnel, server);
     })
@@ -421,7 +428,7 @@ async fn request_and_read_timeouts_do_not_expire_upgraded_stream() {
         .unwrap();
     successful_exchange(client, async {
         let (socket, _) = listener.accept().await.unwrap();
-        exchange(socket, "/acp", Duration::from_secs(2)).await;
+        exchange(socket, check_path("/acp"), Duration::from_secs(2)).await;
     })
     .await;
 }
@@ -448,7 +455,7 @@ async fn preconfigured_rustls_http1_supports_websocket_exchange() {
             socket.get_ref().1.alpn_protocol(),
             Some(b"http/1.1".as_slice())
         );
-        exchange(socket, "/acp", Duration::ZERO).await;
+        exchange(socket, check_path("/acp"), Duration::ZERO).await;
     })
     .await;
 }

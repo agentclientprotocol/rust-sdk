@@ -1,3 +1,5 @@
+//! Checks that a custom role can have a singleton ID without implementing `Default`.
+
 use std::future::Future;
 
 use agent_client_protocol::{ConnectionTo, Dispatch, Error, Handled, Role, RoleId, UntypedRole};

@@ -1,7 +1,7 @@
 //! Test for trace generation.
 //!
 //! This test verifies that:
-//! 1. Conductor correctly generates trace events when trace_to() is enabled
+//! 1. Conductor correctly generates trace events when `trace_to()` is enabled
 //! 2. Trace file contains valid JSON lines
 //! 3. Events capture the message flow through the conductor
 //!

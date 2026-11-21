@@ -65,6 +65,11 @@ pub fn content_block_to_string(block: &ContentBlock) -> String {
 /// The callback receives each `ContentBlock` as it arrives and can process it
 /// asynchronously (e.g., print it, accumulate it, etc.).
 ///
+/// # Errors
+///
+/// Propagates connection, initialization, session setup, and prompt errors,
+/// including failures reading session updates or responding to permission requests.
+///
 /// # Example
 ///
 /// ```ignore
@@ -217,6 +222,10 @@ pub async fn prompt_with_callback(
 ///
 /// This is a convenience wrapper around [`prompt_with_callback`] that accumulates
 /// all content blocks into a single string.
+///
+/// # Errors
+///
+/// Returns the same connection, session, and prompt errors as [`prompt_with_callback`].
 ///
 /// # Example
 ///

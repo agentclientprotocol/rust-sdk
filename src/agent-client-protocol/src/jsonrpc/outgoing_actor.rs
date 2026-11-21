@@ -18,11 +18,11 @@ pub(crate) fn send_raw_message(
         .map_err(crate::util::internal_error)
 }
 
-/// Outgoing protocol actor: Converts application-level OutgoingMessage to protocol-level RawJsonRpcMessage.
+/// Outgoing protocol actor: converts application-level `OutgoingMessage` to protocol-level `RawJsonRpcMessage`.
 ///
 /// This actor handles JSON-RPC protocol semantics:
 /// - Verifies that outgoing requests still have pending response registrations
-/// - Converts OutgoingMessage variants to RawJsonRpcMessage
+/// - Converts `OutgoingMessage` variants to `RawJsonRpcMessage`
 ///
 /// This is the protocol layer - it has no knowledge of how messages are transported.
 pub(super) async fn outgoing_protocol_actor(

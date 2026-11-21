@@ -9,7 +9,7 @@ use crate::{
     Agent, ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcNotification,
     JsonRpcRequest, JsonRpcResponse, RawJsonRpcError, RawJsonRpcMessage, RawJsonRpcParams,
     RawJsonRpcResponse, RequestCancellation, Responder, Role, TransportFrame,
-    jsonrpc::DynamicHandlerCleanup,
+    jsonrpc::{DynamicHandlerCleanup, RequestWithResponder},
     role::HasPeer,
     util::MatchDispatchFrom,
     v1::schema::{
@@ -302,13 +302,7 @@ where
         request: Protocol::MessageRequest,
         responder: Responder<Protocol::MessageResponse>,
         connection: &ConnectionTo<Counterpart>,
-    ) -> Result<
-        Handled<(
-            Protocol::MessageRequest,
-            Responder<Protocol::MessageResponse>,
-        )>,
-        crate::Error,
-    > {
+    ) -> crate::Result<Handled<RequestWithResponder<Protocol::MessageRequest>>> {
         let server_id = Protocol::server_id(&request);
         if server_id != self.server_id {
             return Ok(Handled::No {

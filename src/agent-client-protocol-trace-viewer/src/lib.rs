@@ -35,6 +35,10 @@ pub struct TraceHandle {
 
 impl TraceHandle {
     /// Push a new event to the trace.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a writer panicked while holding the event lock.
     pub fn push(&self, event: serde_json::Value) {
         self.events
             .lock()
@@ -43,12 +47,20 @@ impl TraceHandle {
     }
 
     /// Get the current number of events.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a writer panicked while holding the event lock.
     #[must_use]
     pub fn len(&self) -> usize {
         self.events.lock().expect("events mutex poisoned").len()
     }
 
     /// Check if empty.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a writer panicked while holding the event lock.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.events
@@ -112,6 +124,12 @@ impl Default for TraceViewerConfig {
 /// Returns a handle to push events and a future that runs the server.
 /// The server will poll for new events automatically.
 ///
+/// # Errors
+///
+/// Creating the handle and future does not perform I/O and currently always
+/// succeeds. Awaiting the future returns an error if the server cannot bind
+/// its listener, obtain its address, or serve HTTP.
+///
 /// # Example
 ///
 /// ```no_run
@@ -145,6 +163,11 @@ pub fn serve_memory(
 /// Start the trace viewer server with a file-backed event source.
 ///
 /// The file is re-read on each request, allowing live updates as the file grows.
+///
+/// # Errors
+///
+/// Returns an error if the server cannot bind its listener, obtain its address,
+/// or serve HTTP. A trace-file read failure is handled by the `/events` endpoint.
 ///
 /// # Example
 ///

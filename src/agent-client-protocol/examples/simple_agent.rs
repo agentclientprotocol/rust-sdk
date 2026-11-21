@@ -1,3 +1,5 @@
+//! A minimal ACP v1 agent that answers `initialize` requests over stdio.
+
 use agent_client_protocol::v1::schema::{AgentCapabilities, InitializeRequest, InitializeResponse};
 use agent_client_protocol::{Agent, Result, Stdio};
 

@@ -1,3 +1,5 @@
+//! Exercises Testy's v1 sessions and prompt scenarios, including cancellation during client callbacks.
+
 use std::collections::BTreeMap;
 use std::{
     collections::{HashMap, HashSet},

@@ -1,3 +1,5 @@
+//! Runs the deterministic Testy agent over stdio for subprocess tests.
+
 use agent_client_protocol::ConnectTo;
 
 #[tokio::main]

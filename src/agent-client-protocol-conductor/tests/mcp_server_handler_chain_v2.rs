@@ -1,3 +1,5 @@
+//! Checks that attaching an MCP server preserves the v2 handler chain and rejects duplicate server names.
+
 #![cfg(feature = "unstable_protocol_v2")]
 
 use std::{

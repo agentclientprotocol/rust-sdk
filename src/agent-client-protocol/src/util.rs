@@ -108,12 +108,12 @@ pub(crate) fn redacted_json_line(line: &str) -> impl std::fmt::Display + '_ {
 
 /// Cast from `N` to `M` by serializing/deserialization to/from JSON.
 ///
-/// Failures are Parse errors (`-32700`). Don't use this for the params of an
-/// incoming request or notification: a peer that sends malformed params must
-/// get Invalid params (`-32602`), which [`json_cast_params`] returns. Use
-/// `json_cast` for values the SDK or your own code produced, such as response
-/// results.
+/// Use this for values the SDK or your own code produced, such as response
+/// results. Use [`json_cast_params`] for incoming request or notification params.
 ///
+/// # Errors
+///
+/// Returns Parse error (`-32700`) if serialization or deserialization fails.
 /// Returned diagnostics can contain the input JSON and payload-bearing parse
 /// reasons. Treat them as sensitive, as with [`json_cast_params`].
 pub fn json_cast<N, M>(params: N) -> Result<M, crate::Error>
@@ -139,11 +139,10 @@ where
 
 /// Cast incoming request/notification params into a typed payload.
 ///
-/// Like [`json_cast`], but deserialization failures become
-/// [`Error::invalid_params`](`crate::Error::invalid_params`) (`-32602`)
-/// instead of a parse error, which is the correct JSON-RPC error code for
-/// malformed method parameters.
+/// # Errors
 ///
+/// Returns Internal error (`-32603`) if `params` cannot be serialized, or
+/// Invalid params (`-32602`) if the JSON cannot be decoded as `M`.
 /// Returned diagnostics include the input JSON and may include input values in
 /// the parse reason. Treat them as sensitive; the SDK redacts errors at WARN.
 pub fn json_cast_params<N, M>(params: N) -> Result<M, crate::Error>

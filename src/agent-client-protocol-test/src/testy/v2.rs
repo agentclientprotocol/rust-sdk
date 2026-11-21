@@ -89,6 +89,7 @@ enum PromptAdmission {
 }
 
 impl Testy {
+    /// Creates a v2 test agent with no sessions.
     #[must_use]
     pub fn new() -> Self {
         Self {

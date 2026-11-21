@@ -114,7 +114,6 @@ struct LifetimeTaggedResponse<'a> {
     _scope: PhantomData<&'a ()>,
 }
 
-#[allow(clippy::elidable_lifetime_names)]
 fn map_response_with_scope(
     request: SentRequest<PongResponse>,
     _scope: &(),
@@ -265,9 +264,9 @@ async fn test_bidirectional_communication() {
             // Set up two connections that are symmetric - both can send and receive
             let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-            let side_a_transport =
+            let server_transport =
                 agent_client_protocol::ByteStreams::new(server_writer, server_reader);
-            let side_a = UntypedRole.builder().on_receive_request(
+            let server = UntypedRole.builder().on_receive_request(
                 async |request: PingRequest,
                        responder: Responder<PongResponse>,
                        _connection: ConnectionTo<UntypedRole>| {
@@ -278,19 +277,17 @@ async fn test_bidirectional_communication() {
                 agent_client_protocol::on_receive_request!(),
             );
 
-            let side_b_transport =
+            let client_transport =
                 agent_client_protocol::ByteStreams::new(client_writer, client_reader);
 
-            // Spawn side_a as server
             tokio::task::spawn_local(async move {
-                side_a.connect_to(side_a_transport).await.ok();
+                server.connect_to(server_transport).await.ok();
             });
 
-            // Use side_b as client
             let result = UntypedRole
                 .builder()
                 .connect_with(
-                    side_b_transport,
+                    client_transport,
                     async |cx| -> Result<(), agent_client_protocol::Error> {
                         let request = PingRequest { value: 10 };
                         let response_future = recv(cx.send_request(request));

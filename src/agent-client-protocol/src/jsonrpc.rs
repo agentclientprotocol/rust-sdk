@@ -89,10 +89,6 @@ use crate::{Agent, ConnectTo, RoleId};
 /// other members of the envelope are dropped. Error responses keep unknown
 /// members of the error object in [`RawJsonRpcError::extra`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(
-    clippy::exhaustive_enums,
-    reason = "JSON-RPC defines exactly these message kinds"
-)]
 pub enum RawJsonRpcMessage {
     /// A JSON-RPC request with an id and expected response.
     Request(RawJsonRpcRequest),
@@ -151,10 +147,6 @@ impl TransportFrame {
 /// [`RawJsonRpcMessage`] adds and checks. Other members of the request object
 /// are not kept: a relay that parses and re-serializes a request drops them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(
-    clippy::exhaustive_structs,
-    reason = "JSON-RPC defines exactly these request members"
-)]
 pub struct RawJsonRpcRequest {
     /// The ID the response must carry.
     pub id: RawJsonRpcId,
@@ -172,10 +164,6 @@ pub struct RawJsonRpcRequest {
 /// object are not kept: a relay that parses and re-serializes a notification
 /// drops them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(
-    clippy::exhaustive_structs,
-    reason = "JSON-RPC defines exactly these notification members"
-)]
 pub struct RawJsonRpcNotification {
     /// The notification method.
     pub method: Arc<str>,
@@ -206,10 +194,6 @@ impl From<RawJsonRpcResponse> for RawJsonRpcMessage {
 ///
 /// JSON-RPC params, when present, must be either an array or an object.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(
-    clippy::exhaustive_enums,
-    reason = "JSON-RPC params are either an array or an object"
-)]
 pub enum RawJsonRpcParams {
     /// Positional JSON-RPC params.
     Array(Vec<serde_json::Value>),
@@ -218,7 +202,11 @@ pub enum RawJsonRpcParams {
 }
 
 impl RawJsonRpcParams {
-    /// Convert a JSON value into JSON-RPC params.
+    /// Convert a JSON value into JSON-RPC params. JSON `null` means no params.
+    ///
+    /// # Errors
+    ///
+    /// Returns Invalid params (`-32602`) for strings, numbers, and booleans.
     pub fn from_value(value: serde_json::Value) -> Result<Option<Self>, crate::Error> {
         match value {
             serde_json::Value::Null => Ok(None),
@@ -271,6 +259,10 @@ impl<'de> Deserialize<'de> for RawJsonRpcParams {
 
 impl RawJsonRpcMessage {
     /// Build a raw JSON-RPC request message.
+    ///
+    /// # Errors
+    ///
+    /// Returns Invalid params (`-32602`) if `params` is not an object, an array, or `null`.
     pub fn request(
         method: String,
         params: serde_json::Value,
@@ -284,6 +276,10 @@ impl RawJsonRpcMessage {
     }
 
     /// Build a raw JSON-RPC notification message.
+    ///
+    /// # Errors
+    ///
+    /// Returns Invalid params (`-32602`) if `params` is not an object, an array, or `null`.
     pub fn notification(method: String, params: serde_json::Value) -> Result<Self, crate::Error> {
         Ok(Self::Notification(RawJsonRpcNotification {
             method: Arc::from(method),
@@ -1628,6 +1624,11 @@ impl<
     /// to initiate your own requests. If you need to send requests to the other side,
     /// use [`connect_with`](Self::connect_with) instead.
     ///
+    /// # Errors
+    ///
+    /// Returns errors from the transport, connection tasks, or close callbacks.
+    /// An error sent to a peer in a response is not itself a connection failure.
+    ///
     /// # Example: Byte Stream Transport
     ///
     /// ```no_run
@@ -2497,16 +2498,16 @@ impl RequestCancellation {
 
     /// Run request work until it completes or the peer asks to cancel it.
     ///
-    /// If cancellation is requested first, this returns
-    /// [`Error::request_cancelled`]. This is a convenience for request handlers
-    /// that want to respond with the normal result or the standard
-    /// cancellation error.
-    ///
     /// When cancellation wins, `future` is dropped: work stops at its next
     /// await point, partial results are lost, and any cleanup must happen in
     /// `Drop` implementations. Handlers that need to flush partial results or
     /// run async cleanup should instead watch [`cancelled`](Self::cancelled)
     /// or poll [`is_cancelled`](Self::is_cancelled) from inside the work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::request_cancelled`] if cancellation wins, or the
+    /// future's own error if it finishes first.
     ///
     /// [`Error::request_cancelled`]: crate::Error::request_cancelled
     pub async fn run_until_cancelled<T>(
@@ -3168,7 +3169,7 @@ impl OutgoingMessage {
     }
 }
 
-/// Return type from JrHandler; indicates whether the request was handled or not.
+/// Whether a dispatch handler handled a message or passed it on.
 #[must_use]
 #[derive(Debug)]
 pub enum Handled<T> {
@@ -3815,7 +3816,8 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     ///
     /// # Errors
     ///
-    /// If the spawned task returns an error, the entire server will shut down.
+    /// Returns an error if the connection's task queue is closed. An error
+    /// returned later by the spawned task shuts down the connection.
     #[track_caller]
     pub fn spawn(
         &self,
@@ -3844,6 +3846,11 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// [`v1::ConnectionTo`](crate::v1::ConnectionTo) for
     /// [`Client.v1()`](crate::Client::v1), and a `v2::ConnectionTo` for
     /// `Client.v2()`. Convert a typed connection back with `into_raw`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the parent connection cannot queue the child
+    /// connection's task. It does not wait for the child to connect.
     ///
     /// # Example: Proxying to a backend connection
     ///
@@ -3953,6 +3960,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     ///
     /// The request context's response type matches the request's response type,
     /// enabling type-safe message forwarding.
+    ///
+    /// # Errors
+    ///
+    /// Returns the forwarding error from [`send_proxied_message_to`](Self::send_proxied_message_to).
     pub fn send_proxied_message<
         Req: JsonRpcRequest<Response: Send>,
         Notif: JsonRpcNotification,
@@ -3980,6 +3991,12 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// and re-issue the cancellation with the forwarded request's own ID.
     /// A proxy forwarding an `elicitation/create` from its successor to its
     /// client also translates `params.requestId` back to that client's ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a notification cannot be encoded or queued, or if
+    /// response forwarding cannot be scheduled for a request. A downstream
+    /// request error is sent to the upstream responder, not returned here.
     pub fn send_proxied_message_to<
         Peer: Role,
         Req: JsonRpcRequest<Response: Send>,
@@ -4341,6 +4358,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// This is a convenience method that sends to the counterpart role `R`.
     /// For explicit control over the target peer, use [`send_notification_to`](Self::send_notification_to).
     ///
+    /// # Errors
+    ///
+    /// Returns an error if the notification cannot be encoded or queued.
+    ///
     /// ```no_run
     /// # use agent_client_protocol_test::*;
     /// # async fn example(cx: agent_client_protocol::ConnectionTo<agent_client_protocol::Agent>) -> Result<(), agent_client_protocol::Error> {
@@ -4364,6 +4385,11 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     ///
     /// The message will be transformed according to the [`HasPeer`](crate::role::HasPeer)
     /// implementation before being sent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the notification cannot be encoded for the peer or
+    /// the outgoing queue is closed. This does not wait for wire delivery.
     pub fn send_notification_to<Peer: Role, N: JsonRpcNotification>(
         &self,
         peer: Peer,
@@ -4401,6 +4427,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// already knows the correct request ID. Use this low-level method only
     /// when implementing custom routing with a request ID that is valid on
     /// this connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cancellation notification cannot be encoded or queued.
     pub fn send_cancel_request(
         &self,
         request_id: impl Into<RawJsonRpcId>,
@@ -4423,6 +4453,11 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// already knows the correct request ID. Use this low-level method only
     /// when implementing custom routing with a request ID that is valid on
     /// this connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cancellation notification cannot be encoded or queued.
+    /// It does not check whether the peer still has a pending request with this ID.
     pub fn send_cancel_request_to<Peer: Role>(
         &self,
         _peer: Peer,
@@ -4445,6 +4480,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// role's default handler. They receive messages that the builder handlers decline.
     ///
     /// The handler will stay registered until the returned registration guard is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection no longer accepts handler registrations.
     pub fn add_dynamic_handler(
         &self,
         handler: impl HandleDispatchFrom<Counterpart> + 'static,
@@ -4697,13 +4736,17 @@ pub struct Responder<T: JsonRpcResponse = serde_json::Value, P: Protocol = Raw> 
     ///
     /// For incoming requests: serializes to JSON and sends over the wire.
     /// For incoming responses: sends to the waiting oneshot channel.
-    send_fn: Box<dyn FnOnce(Result<T, crate::Error>) -> Result<(), crate::Error> + Send>,
+    send_fn: ResponseFn<T, ()>,
 
     /// Answers the request with an error if no response is sent. Owns the
     /// request-local cancellation state, so it can still observe a
     /// cancellation when it fires.
     drop_guard: ResponderDropGuard,
 }
+
+type ResponseFn<T, U> = Box<dyn FnOnce(crate::Result<T>) -> crate::Result<U> + Send>;
+
+pub(crate) type RequestWithResponder<R> = (R, Responder<<R as JsonRpcRequest>::Response>);
 
 /// Sends the automatic error for a [`Responder`] dropped without responding.
 struct ResponderDropGuard {
@@ -4932,6 +4975,12 @@ impl<T: JsonRpcResponse, P: Protocol> Responder<T, P> {
     }
 
     /// Respond to the JSON-RPC request with either a value (`Ok`) or an error (`Err`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the response cannot be queued. An `Err` in
+    /// `response`, including a conversion error from a wrapped responder,
+    /// is sent to the peer rather than returned here.
     pub fn respond_with_result(
         mut self,
         response: Result<T, crate::Error>,
@@ -4942,16 +4991,29 @@ impl<T: JsonRpcResponse, P: Protocol> Responder<T, P> {
     }
 
     /// Respond to the JSON-RPC request with a value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the response cannot be queued.
     pub fn respond(self, response: T) -> Result<(), crate::Error> {
         self.respond_with_result(Ok(response))
     }
 
     /// Respond to the JSON-RPC request with an internal error containing a message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the error response cannot be queued.
     pub fn respond_with_internal_error(self, message: impl ToString) -> Result<(), crate::Error> {
         self.respond_with_error(crate::util::internal_error(message))
     }
 
     /// Respond to the JSON-RPC request with an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the error response cannot be queued. `error` is
+    /// the payload for the peer, not the return value.
     pub fn respond_with_error(self, error: crate::Error) -> Result<(), crate::Error> {
         tracing::debug!(id = ?self.id, error = ?crate::util::redacted_error(error.code), "respond_with_error called");
         self.respond_with_result(Err(error))
@@ -4998,12 +5060,13 @@ impl<T: JsonRpcResponse> Responder<T, Raw> {
     /// [`MatchDispatch`](crate::util::MatchDispatch) handler to a v2 session
     /// helper.
     ///
-    /// Only the request ID's type changes. It fails only when `Q` does not
-    /// allow the ID: protocol v2 rejects `null` with the Invalid Request
-    /// error (`-32600`) that a v2 connection sends for a `null` request ID.
-    /// That cannot happen for a request received on a v2 connection, which
-    /// rejects such requests before dispatch. On failure the responder is
-    /// dropped, which answers the request with an error.
+    /// Only the request ID's type changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns Invalid request (`-32600`) if the ID is `null` and `Q` is v2.
+    /// A v2 connection rejects such requests before dispatch. On conversion
+    /// failure the responder is dropped, which answers the request with an error.
     ///
     /// ```
     /// # use agent_client_protocol::{Error, Responder, V1, v1::schema};
@@ -5048,12 +5111,12 @@ pub struct ResponseRouter<T: JsonRpcResponse = serde_json::Value, P: Protocol = 
     /// The `id` of the original request.
     id: HandleId<P>,
 
-    /// The RoleId to which the original request was sent
+    /// The [`RoleId`] to which the original request was sent
     /// (and hence from which the reply is expected).
     role_id: RoleId,
 
     /// Function to send the response to the waiting task.
-    send_fn: Box<dyn FnOnce(Result<T, crate::Error>) -> Result<(), crate::Error> + Send>,
+    send_fn: ResponseFn<T, ()>,
 
     /// Shared route used to deliver a dispatch-handler error to the same waiter.
     reply_target: ResponseReplyTarget,
@@ -5196,7 +5259,7 @@ impl<T: JsonRpcResponse, P: Protocol> ResponseRouter<T, P> {
         }
     }
 
-    /// Return a new ResponseRouter that expects a response of type U.
+    /// Return a new [`ResponseRouter`] that expects a response of type `U`.
     ///
     /// `wrap_fn` will be invoked with the method name and the result to transform
     /// type `U` into type `T` before sending.
@@ -5218,22 +5281,39 @@ impl<T: JsonRpcResponse, P: Protocol> ResponseRouter<T, P> {
     }
 
     /// Route the response result to the waiting task.
+    ///
+    /// # Errors
+    ///
+    /// Response and conversion errors are delivered to the waiter. Routing
+    /// itself currently returns `Ok(())`, even if the waiter has been dropped.
     pub fn route_with_result(self, response: Result<T, crate::Error>) -> Result<(), crate::Error> {
         tracing::debug!(id = ?self.id, "response routed to awaiter");
         (self.send_fn)(response)
     }
 
     /// Route a successful response value to the waiting task.
+    ///
+    /// # Errors
+    ///
+    /// Conversion errors go to the waiter, as in [`route_with_result`](Self::route_with_result).
     pub fn route(self, response: T) -> Result<(), crate::Error> {
         self.route_with_result(Ok(response))
     }
 
     /// Route an internal error to the waiting task.
+    ///
+    /// # Errors
+    ///
+    /// The internal error goes to the waiter, not to the caller of this method.
     pub fn route_with_internal_error(self, message: impl ToString) -> Result<(), crate::Error> {
         self.route_with_error(crate::util::internal_error(message))
     }
 
     /// Route an error response to the waiting task.
+    ///
+    /// # Errors
+    ///
+    /// The supplied error goes to the waiter, not to the caller of this method.
     pub fn route_with_error(self, error: crate::Error) -> Result<(), crate::Error> {
         tracing::debug!(id = ?self.id, error = ?crate::util::redacted_error(error.code), "error routed to awaiter");
         self.route_with_result(Err(error))
@@ -5243,8 +5323,10 @@ impl<T: JsonRpcResponse, P: Protocol> ResponseRouter<T, P> {
 impl<T: JsonRpcResponse> ResponseRouter<T, Raw> {
     /// Convert this version-neutral router to protocol `Q`'s router.
     ///
-    /// Only the request ID's type changes. The SDK never assigns `null` to
-    /// requests it sends, so this succeeds for every marker.
+    /// # Errors
+    ///
+    /// Fails only for an ID that `Q` rejects. The SDK never assigns `null`
+    /// to outgoing requests, so its routers convert to every protocol marker.
     pub fn into_protocol<Q: Protocol>(self) -> Result<ResponseRouter<T, Q>, crate::Error> {
         self.retag()
     }
@@ -5265,13 +5347,20 @@ pub trait JsonRpcMessage: 'static + Debug + Sized + Send + Clone {
     fn method(&self) -> &str;
 
     /// Convert this message into an untyped message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the message's params cannot be encoded as JSON.
     fn to_untyped_message(&self) -> Result<UntypedMessage, crate::Error>;
 
     /// Parse this type from a method name and the message's JSON `params`.
     ///
-    /// Returns an error if the method doesn't match or deserialization fails.
     /// Callers should use `matches_method` first to check if this type handles the method.
     /// A message without `params` is parsed from [`serde_json::Value::Null`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the method doesn't match or its params cannot be decoded.
     fn parse_message(method: &str, params: &serde_json::Value) -> Result<Self, crate::Error>;
 }
 
@@ -5292,9 +5381,17 @@ pub trait JsonRpcMessage: 'static + Debug + Sized + Send + Clone {
 /// ```
 pub trait JsonRpcResponse: 'static + Debug + Sized + Send + Clone {
     /// Convert this message into a JSON value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the response cannot be encoded for `method`.
     fn into_json(self, method: &str) -> Result<serde_json::Value, crate::Error>;
 
     /// Parse a JSON value into the response type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `value` cannot be decoded as the response to `method`.
     fn from_json(method: &str, value: serde_json::Value) -> Result<Self, crate::Error>;
 }
 
@@ -5417,10 +5514,12 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcNotification, P: Protocol> Dispatch<Req,
         }
     }
 
-    /// Convert the message in self to an untyped message.
+    /// Convert the request or notification to an untyped message.
     ///
-    /// Note: Response variants don't have an untyped message representation.
-    /// This returns an error for Response variants.
+    /// # Errors
+    ///
+    /// Returns an error for a response, which has no method params, or if
+    /// the request or notification cannot encode its params.
     pub fn to_untyped_message(&self) -> Result<UntypedMessage, crate::Error> {
         match self {
             Dispatch::Request(request, _) => request.to_untyped_message(),
@@ -5433,7 +5532,10 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcNotification, P: Protocol> Dispatch<Req,
 
     /// Convert self to an untyped message context.
     ///
-    /// Note: Response variants cannot be converted. This returns an error for Response variants.
+    /// # Errors
+    ///
+    /// Returns an error for a response, or if the request or notification
+    /// cannot encode its params.
     pub fn into_untyped_dispatch(
         self,
     ) -> Result<Dispatch<UntypedMessage, UntypedMessage, P>, crate::Error> {
@@ -5528,6 +5630,8 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcNotification, P: Protocol> Dispatch<Req,
 impl<Req: JsonRpcRequest, Notif: JsonRpcNotification> Dispatch<Req, Notif, Raw> {
     /// Convert this version-neutral dispatch to protocol `Q`'s request
     /// handles.
+    ///
+    /// # Errors
     ///
     /// See [`Responder::into_protocol`]: this fails only for a request whose
     /// `null` ID `Q` does not allow, with the Invalid Request error
@@ -5659,7 +5763,10 @@ impl Dispatch {
     ///
     /// * `Ok(Ok(typed))` if this is a notification of the requested type
     /// * `Ok(Err(self))` if this is not a matching notification
-    /// * `Err` if its method matches the requested type but parsing fails
+    ///
+    /// # Errors
+    ///
+    /// Returns the parsing error if the method matches but its params cannot be decoded.
     pub fn into_notification<N: JsonRpcNotification>(
         self,
     ) -> Result<Result<N, Dispatch>, crate::Error> {
@@ -5683,10 +5790,13 @@ impl Dispatch {
     ///
     /// * `Ok(Ok(typed))` if this is a request of the requested type
     /// * `Ok(Err(self))` if this is not a matching request
-    /// * `Err` if its method matches the requested type but parsing fails
+    ///
+    /// # Errors
+    ///
+    /// Returns the parsing error if the method matches but its params cannot be decoded.
     pub fn into_request<Req: JsonRpcRequest>(
         self,
-    ) -> Result<Result<(Req, Responder<Req::Response>), Dispatch>, crate::Error> {
+    ) -> crate::Result<Result<RequestWithResponder<Req>, Dispatch>> {
         match self {
             Dispatch::Request(msg, responder) => {
                 if !Req::matches_method(&msg.method) {
@@ -5741,6 +5851,10 @@ pub struct UntypedMessage {
 
 impl UntypedMessage {
     /// Returns an untyped message with the given method and parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `params` cannot be serialized as JSON.
     pub fn new(method: &str, params: impl Serialize) -> Result<Self, crate::Error> {
         let params = serde_json::to_value(params)?;
         Ok(Self {
@@ -5923,8 +6037,7 @@ pub struct SentRequest<T, P: Protocol = Raw> {
     /// Converts the raw response into the typed result. It receives error
     /// responses too, so [`SentRequest::recover_error`] can map an error to a
     /// success.
-    to_result:
-        Box<dyn FnOnce(Result<serde_json::Value, crate::Error>) -> Result<T, crate::Error> + Send>,
+    to_result: ResponseFn<serde_json::Value, T>,
     cancellation: SentRequestCancellation,
     response_ordering: ResponseOrdering,
     /// Cancellation markers of other (incoming) requests whose cancellation
@@ -6074,8 +6187,10 @@ impl<T> PreparedRequest<T, Raw> {
     /// Convert this version-neutral prepared request to protocol `Q`'s
     /// handle without publishing it.
     ///
-    /// Only the request ID's type changes. The SDK never assigns `null` to
-    /// requests it sends, so this succeeds for every marker.
+    /// # Errors
+    ///
+    /// Fails only for an ID that `Q` rejects. IDs reserved by the SDK are
+    /// never `null` and convert to every protocol marker.
     pub fn into_protocol<Q: Protocol>(self) -> Result<PreparedRequest<T, Q>, crate::Error> {
         Ok(PreparedRequest {
             sent: self.sent.into_protocol()?,
@@ -6616,8 +6731,10 @@ impl<T, P: Protocol> SentRequest<T, P> {
     /// `Ok(())` means this call encountered no immediate error, not that a
     /// notification was sent or the peer stopped work.
     ///
-    /// Errors are only reported by the call that attempts to send the
-    /// notification.
+    /// # Errors
+    ///
+    /// Only the call that attempts to send reports a failure to encode or
+    /// queue the notification. See [`RequestCancellationHandle::cancel`].
     pub fn cancel(&self) -> Result<(), crate::Error> {
         self.cancellation.send()
     }
@@ -6704,8 +6821,10 @@ impl<T, P: Protocol> SentRequest<T, P> {
 impl<T> SentRequest<T, Raw> {
     /// Convert this version-neutral request handle to protocol `Q`'s handle.
     ///
-    /// Only the request ID's type changes. The SDK never assigns `null` to
-    /// requests it sends, so this succeeds for every marker.
+    /// # Errors
+    ///
+    /// Fails only for an ID that `Q` rejects. The SDK never assigns `null`
+    /// to outgoing requests, so its request handles convert to every marker.
     pub fn into_protocol<Q: Protocol>(self) -> Result<SentRequest<T, Q>, crate::Error> {
         let id = self.id.clone().into_protocol()?;
         Ok(self.retag_id(|_| id))
@@ -6854,6 +6973,11 @@ impl<T, P: Protocol> SentRequest<T, P> {
     ///   (normal data or a cancellation error) is still forwarded back. This is
     ///   equivalent to registering the responder's marker with
     ///   `forward_cancellation_from`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection cannot queue the forwarding task.
+    /// A failure to receive or decode the response is forwarded to `responder`.
     #[track_caller]
     pub fn forward_response_to<Q: Protocol>(
         self,
@@ -7011,6 +7135,11 @@ impl<T, P: Protocol> SentRequest<T, P> {
     /// - Linear control flow is more natural than callbacks
     ///
     /// For handler callbacks, use [`on_receiving_result`](Self::on_receiving_result) instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns a request or peer response error, an error decoding or mapping
+    /// the response, or an error if the connection closes before the reply arrives.
     pub async fn block_task(self) -> Result<T, crate::Error> {
         let response = await_response_forwarding_cancellation(
             self.response_rx,
@@ -7126,6 +7255,11 @@ impl<T, P: Protocol> SentRequest<T, P> {
     /// - You only care about the success case
     ///
     /// For more control over error handling, use [`on_receiving_result`](Self::on_receiving_result).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the callback task cannot be queued. A request
+    /// error is sent to `responder` instead of invoking the success callback.
     #[track_caller]
     pub fn on_receiving_ok_result<F, Q: Protocol>(
         self,
@@ -7206,10 +7340,11 @@ impl<T, P: Protocol> SentRequest<T, P> {
     /// See the [`ordering`](crate::concepts::ordering) module for details on ordering guarantees
     /// and how to avoid deadlocks.
     ///
-    /// # Error Handling
+    /// # Errors
     ///
-    /// If the scheduled task returns `Err`, the entire server will shut down. Make sure to handle
-    /// errors appropriately within your task.
+    /// Returns an error if the callback task cannot be queued. Peer errors
+    /// and response decoding errors are passed to the callback. An error
+    /// returned by the callback shuts down the connection.
     ///
     /// # When to Use
     ///
@@ -7527,7 +7662,7 @@ where
 
 /// A channel endpoint representing one side of a bidirectional JSON-RPC transport.
 ///
-/// A channel carries complete TransportFrame values across in-process components and
+/// A channel carries complete [`TransportFrame`] values across in-process components and
 /// transport adapters. Malformed wire input is an
 /// explicit frame; failures while driving a physical transport are returned by that
 /// transport's future.
@@ -9009,10 +9144,10 @@ mod tests {
             UntypedMessage::new("stale", serde_json::json!({}))
                 .expect("test notification should serialize"),
         );
-        let handled =
+        let outcome =
             futures::executor::block_on(handler.dyn_handle_dispatch_from(message, connection))
                 .expect("inactive handler should decline cleanly");
-        assert!(matches!(handled, Handled::No { retry: false, .. }));
+        assert!(matches!(outcome, Handled::No { retry: false, .. }));
     }
 
     #[test]

@@ -115,7 +115,7 @@ impl DebugLogger {
     }
 
     /// Write a tracing log line to the debug file
-    /// This is synchronous and blocks, suitable for use with tracing's MakeWriter
+    /// This is synchronous and blocks, suitable for use with tracing's `MakeWriter`
     pub fn write_tracing_log(&self, line: &str) {
         let writer = self.writer.clone();
         let line = line.to_string();

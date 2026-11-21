@@ -1,3 +1,5 @@
+//! Checks the v1 `session/delete` method mapping and response wire format.
+
 use agent_client_protocol::v1::schema::{
     ClientRequest, DeleteSessionRequest, DeleteSessionResponse,
 };

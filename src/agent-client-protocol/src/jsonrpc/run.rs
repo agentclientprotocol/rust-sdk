@@ -75,8 +75,7 @@ impl RunnerErrorScope {
 
 /// A background task that runs alongside a connection.
 ///
-/// `RunIn<R>` means "run in the context of being role R". The task receives
-/// a `ConnectionTo<R::Counterpart>` for communicating with the other side.
+/// The task receives a `ConnectionTo<Counterpart>` for communicating with the other side.
 ///
 /// Implementations are composed using [`ChainRun`] and run in parallel
 /// when the connection is active.
@@ -88,7 +87,7 @@ pub trait RunWithConnectionTo<Counterpart: Role>: Send {
     ) -> impl Future<Output = Result<(), crate::Error>> + Send;
 }
 
-/// A no-op RunIn that completes immediately.
+/// A no-op runner that completes immediately.
 #[derive(Debug, Default)]
 pub struct NullRun;
 
@@ -101,7 +100,7 @@ impl<Counterpart: Role> RunWithConnectionTo<Counterpart> for NullRun {
     }
 }
 
-/// Chains two RunIn implementations to run in parallel.
+/// Runs two [`RunWithConnectionTo`] implementations in parallel.
 #[derive(Debug)]
 pub struct ChainRun<A, B> {
     a: A,
@@ -109,7 +108,7 @@ pub struct ChainRun<A, B> {
 }
 
 impl<A, B> ChainRun<A, B> {
-    /// Create a new chained RunIn from two RunIn implementations.
+    /// Create a chain from two runners.
     pub fn new(a: A, b: B) -> Self {
         Self { a, b }
     }
@@ -155,7 +154,7 @@ async fn finish_runner_after_error<R: Role>(
     }
 }
 
-/// A RunIn created from a closure via [`with_spawned`](crate::Builder::with_spawned).
+/// A runner created from a closure via [`with_spawned`](crate::Builder::with_spawned).
 pub struct SpawnedRun<F, P> {
     task_fn: F,
     location: &'static std::panic::Location<'static>,
@@ -163,7 +162,7 @@ pub struct SpawnedRun<F, P> {
 }
 
 impl<F, P> SpawnedRun<F, P> {
-    /// Create a new spawned RunIn from a closure.
+    /// Create a new spawned runner from a closure.
     pub fn new(location: &'static std::panic::Location<'static>, task_fn: F) -> Self {
         Self {
             task_fn,

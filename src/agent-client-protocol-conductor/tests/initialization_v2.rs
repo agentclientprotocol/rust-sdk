@@ -1,3 +1,5 @@
+//! Exercises version negotiation and session setup through a conductor chain with v2 proxies and agents.
+
 #![cfg(feature = "unstable_protocol_v2")]
 
 use std::sync::{

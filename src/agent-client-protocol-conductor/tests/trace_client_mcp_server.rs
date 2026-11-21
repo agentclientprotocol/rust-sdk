@@ -6,7 +6,7 @@
 //! 3. Client → Agent: MCP response
 //! 4. Agent → Client: session/update notification, prompt response
 //!
-//! Unlike trace_mcp_tool_call.rs which tests proxy-hosted MCP servers, this test
+//! Unlike `trace_mcp_tool_call.rs`, which tests proxy-hosted MCP servers, this test
 //! verifies that MCP requests travel all the way back to the client.
 
 use agent_client_protocol::mcp_server::McpServer;
@@ -33,7 +33,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 /// - Strips timestamps (set to 0.0)
 /// - Replaces UUIDs with sequential IDs (id:0, id:1, etc.)
 /// - Replaces session IDs with "session:0", etc.
-/// - Replaces loopback HTTP endpoints with "http:endpoint:0", etc.
+/// - Replaces loopback HTTP endpoints with `http:endpoint:0`, etc.
 /// - Replaces MCP server and logical request IDs with stable sequential IDs
 /// - Redacts runtime-generated HTTP Authorization headers
 struct EventNormalizer {

@@ -194,9 +194,14 @@ const PROXY_SUCCESSOR: &str = v1::PROXY_METHOD_NAMES.proxy_successor;
 /// New variants are added as the SDK supports more protocol versions.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
-// Built once per conductor connection; boxing a variant would only make it
-// harder to match on.
-#[allow(clippy::large_enum_variant)]
+// TODO(next major): revisit boxing the public initialization payloads, built once per connection.
+#[cfg_attr(
+    feature = "unstable_protocol_v2",
+    allow(
+        clippy::large_enum_variant,
+        reason = "the size difference depends on the enabled schema capabilities"
+    )
+)]
 pub enum SelectedInitializeRequest {
     /// The conductor selected ACP protocol v1.
     V1(v1::InitializeRequest),
@@ -460,12 +465,16 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
     ///
     /// Events will be written as newline-delimited JSON (`.jsons` format).
     /// Use `agent-client-protocol-trace-viewer` to view the trace as an interactive sequence diagram.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error if `path` cannot be created or opened for truncation.
     pub fn trace_to_path(mut self, path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
         self.trace_writer = Some(crate::trace::TraceWriter::from_path(path)?);
         Ok(self)
     }
 
-    /// Enable trace logging with an existing TraceWriter.
+    /// Enable trace logging with an existing [`TraceWriter`](crate::trace::TraceWriter).
     #[must_use]
     pub fn with_trace_writer(mut self, writer: crate::trace::TraceWriter) -> Self {
         self.trace_writer = Some(writer);
@@ -473,6 +482,12 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
     }
 
     /// Run the conductor with a transport.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a transport or connection-task failure from
+    /// [`Builder::connect_to`]. Errors answered on individual requests are
+    /// not themselves connection failures.
     pub async fn run(
         self,
         transport: impl ConnectTo<Host>,
@@ -1608,12 +1623,15 @@ fn select_like_an_agent(requested: ProtocolVersion) -> ProtocolVersion {
 pub(crate) use sealed::{HostRole, Token};
 
 mod sealed {
-    use super::*;
+    use super::{
+        Client, ConductorMessage, ConductorRunner, ConnectionTo, Dispatch, Error, Handled, HasPeer,
+        ProtocolVersion, Role, SelectedInitializeRequest, mpsc,
+    };
 
     /// A value only this crate can create.
     ///
     /// Every [`HostRole`] method takes one, so code outside this crate cannot
-    /// call those methods through a [`ConductorHostRole`] bound.
+    /// call those methods through a [`ConductorHostRole`](super::ConductorHostRole) bound.
     #[derive(Debug, Clone, Copy)]
     pub struct Token(());
 
@@ -1623,9 +1641,9 @@ mod sealed {
         }
     }
 
-    /// The conductor's behavior for each [`ConductorHostRole`].
+    /// The conductor's behavior for each [`ConductorHostRole`](super::ConductorHostRole).
     ///
-    /// Private to this crate, so [`ConductorHostRole`] cannot be implemented
+    /// Private to this crate, so [`ConductorHostRole`](super::ConductorHostRole) cannot be implemented
     /// outside it. Its methods take a [`Token`], so they cannot be called
     /// outside it either. `Instantiator` is not a stable extension point.
     pub trait HostRole: Role<Counterpart: HasPeer<Client>> {

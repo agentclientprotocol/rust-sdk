@@ -1,3 +1,5 @@
+//! Checks that compaction updates and summary chunks survive typed session notification dispatch.
+
 use agent_client_protocol::JsonRpcMessage;
 use agent_client_protocol::v1::schema::{
     AgentNotification, ClientCapabilities, ClientSessionCapabilities, CompactionCapabilities,

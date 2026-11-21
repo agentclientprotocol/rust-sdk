@@ -171,6 +171,8 @@ where
     /// This is a convenience wrapper around [`build_session`](Self::build_session)
     /// that uses [`std::env::current_dir`] to get the working directory.
     ///
+    /// # Errors
+    ///
     /// Returns an error if the current directory cannot be determined.
     pub fn build_session_cwd(&self) -> Result<SessionBuilder<Counterpart, NullRun>, crate::Error> {
         let cwd = std::env::current_dir().map_err(|e| {
@@ -681,6 +683,10 @@ where
     /// proxy such as `McpOverAcpPolyfill` must sit in front of it; otherwise a
     /// conforming agent rejects the setup request with `-32602`. This method
     /// does not check the agent's capabilities.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection cannot register the MCP message handler.
     #[cfg(feature = "unstable_mcp_over_acp")]
     pub fn with_mcp_server<McpRun>(
         mut self,
@@ -747,6 +753,11 @@ where
     /// A response interceptor that retains the response and routes it later
     /// cannot retroactively order session setup before messages the dispatch
     /// loop has already processed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session runner or response callback cannot
+    /// be scheduled. Session setup and callback errors occur in the spawned tasks.
     pub fn on_session_start<F, Fut>(self, op: F) -> Result<(), crate::Error>
     where
         R: 'static,
@@ -840,6 +851,11 @@ where
     /// code runs under the barrier: the callback is invoked in a spawned task, so it may wait for
     /// later connection traffic. A response interceptor that retains the response and routes it
     /// later cannot retroactively order this setup before messages the loop already processed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session runner or response callback cannot be
+    /// scheduled. An error from the downstream request goes to `responder`.
     pub fn on_proxy_session_start<F, Fut>(
         self,
         responder: Responder<NewSessionResponse, crate::V1>,
@@ -937,6 +953,11 @@ where
     /// session's background runners would terminate when `op` returns).
     ///
     /// Requires calling [`block_task`](Self::block_task) first.
+    ///
+    /// # Errors
+    ///
+    /// Propagates failures from `session/new`, session handler registration,
+    /// the session runner, or `op`.
     pub async fn run_until<T>(
         self,
         op: impl for<'runner> AsyncFnOnce(
@@ -980,12 +1001,15 @@ where
     /// runners are spawned into background tasks that live for the connection
     /// lifetime.
     ///
-    /// An error response to `session/new` is returned to the caller and leaves
-    /// the connection running. The session's dynamic handlers are removed, so
-    /// its runners stop once their cleanup finishes. Session routing is
-    /// installed before later inbound messages are dispatched.
+    /// Session routing is installed before later inbound messages are dispatched.
     ///
     /// Requires calling [`block_task`](Self::block_task) first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runner cannot be scheduled, `session/new`
+    /// fails, or session routing cannot be installed. A peer error leaves the
+    /// connection running and removes the session's dynamic handlers.
     pub async fn start_session(
         self,
     ) -> Result<SessionSetup<'static, Counterpart, NewSessionResponse>, crate::Error>
@@ -1058,6 +1082,11 @@ where
     /// client.
     ///
     /// Requires calling [`block_task`](Self::block_task) first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if session setup fails, the reply cannot be queued for
+    /// the client, or [`ActiveSession::proxy_remaining_messages`] fails.
     pub async fn start_session_proxy(
         self,
         responder: Responder<NewSessionResponse, crate::V1>,
@@ -1123,9 +1152,10 @@ where
 /// [`ActiveSession::read_update`].
 #[non_exhaustive]
 #[derive(Debug)]
+// TODO(next major): revisit boxing the public Message payload. It is the common case.
 #[allow(
     clippy::large_enum_variant,
-    reason = "messages vastly outnumber prompt responses; boxing would add a heap allocation"
+    reason = "the size difference depends on target and unified schema features"
 )]
 pub enum SessionMessage {
     /// A request or notification the agent sent for this session, such as a
@@ -1166,6 +1196,11 @@ where
     /// [`read_to_string`](Self::read_to_string). The `session/prompt`
     /// response, or the error the agent answered with, arrives on the same
     /// stream as [`SessionMessage::PromptResponse`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the prompt response handler cannot be scheduled.
+    /// Request and peer errors arrive on the update stream.
     pub fn send_prompt(&mut self, prompt: impl ToString) -> Result<(), crate::Error> {
         self.send_prompt_blocks(vec![prompt.to_string().into()])
     }
@@ -1177,6 +1212,11 @@ where
     /// [`send_prompt`](Self::send_prompt), the
     /// response arrives on the update stream as
     /// [`SessionMessage::PromptResponse`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the prompt response handler cannot be scheduled.
+    /// Request and peer errors arrive on the update stream.
     pub fn send_prompt_blocks(&mut self, prompt: Vec<ContentBlock>) -> Result<(), crate::Error> {
         let update_tx = self.update_tx.clone();
         self.connection
@@ -1195,6 +1235,11 @@ where
 
     /// Read the next item on the session's update stream: a message the agent
     /// sent for this session, or the response to a prompt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the update stream closes. A prompt failure is a
+    /// [`SessionMessage::PromptResponse`] item, not a failure to read the stream.
     pub async fn read_update(&mut self) -> Result<SessionMessage, crate::Error> {
         use futures::StreamExt;
         let message =
@@ -1211,8 +1256,12 @@ where
     /// Ignores non-text updates. Requests from the agent that reach the
     /// session, such as `session/request_permission`, are answered with a
     /// method not found error (`-32601`). Use
-    /// [`read_update`](Self::read_update) instead to answer them yourself. If
-    /// the agent answers the prompt with an error, this returns that error.
+    /// [`read_update`](Self::read_update) instead to answer them yourself.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a prompt error, a closed update stream, or a failure to
+    /// decode an update or answer an unmatched request.
     pub async fn read_to_string(&mut self) -> Result<String, crate::Error> {
         let mut output = String::new();
         loop {
@@ -1278,6 +1327,11 @@ where
     /// steps 1 and 4 wait for the proxy handler. The deactivated handler stays
     /// registered until the proxy handler is installed, so a request in that
     /// window waits too instead of being rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a queued message cannot be forwarded or the
+    /// connection cannot register the replacement proxy handler.
     pub fn proxy_remaining_messages(self) -> Result<(), crate::Error>
     where
         Link: HasPeer<Client>,

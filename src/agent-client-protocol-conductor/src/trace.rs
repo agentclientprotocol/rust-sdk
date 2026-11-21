@@ -139,6 +139,11 @@ pub struct NotificationEvent {
 /// Trait for destinations that can receive trace events.
 pub trait WriteEvent: Send + 'static {
     /// Write a trace event to the destination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the destination cannot accept the event, for
+    /// example if writing the trace file fails or the receiving channel is closed.
     fn write_event(&mut self, event: &TraceEvent) -> std::io::Result<()>;
 }
 
@@ -161,7 +166,7 @@ impl<W: Write + Send + 'static> WriteEvent for EventWriter<W> {
     }
 }
 
-/// Impl for UnboundedSender - sends events to a channel (useful for testing).
+/// Sends events to an unbounded channel (useful for testing).
 impl WriteEvent for futures::channel::mpsc::UnboundedSender<TraceEvent> {
     fn write_event(&mut self, event: &TraceEvent) -> std::io::Result<()> {
         self.unbounded_send(event.clone())
@@ -194,7 +199,7 @@ struct RequestDetails {
 }
 
 impl TraceWriter {
-    /// Create a new trace writer from any WriteEvent destination.
+    /// Create a new trace writer from any [`WriteEvent`] destination.
     pub fn new<D: WriteEvent>(dest: D) -> Self {
         Self {
             dest: Box::new(dest),
@@ -204,6 +209,10 @@ impl TraceWriter {
     }
 
     /// Create a new trace writer that writes to a file path.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error if `path` cannot be created or opened for truncation.
     pub fn from_path(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let file = OpenOptions::new()
             .create(true)
@@ -222,39 +231,6 @@ impl TraceWriter {
     fn write_event(&mut self, event: &TraceEvent) {
         // Ignore errors - tracing should not break the conductor
         drop(self.dest.write_event(event));
-    }
-
-    /// Write a request event.
-    #[expect(clippy::too_many_arguments)]
-    fn request(
-        &mut self,
-        protocol: MessageProtocol,
-        from: ComponentIndex,
-        to: ComponentIndex,
-        id: serde_json::Value,
-        method: String,
-        session: Option<String>,
-        mut params: serde_json::Value,
-    ) {
-        redact_credentials(&mut params);
-        self.request_details.insert(
-            id.clone(),
-            RequestDetails {
-                protocol,
-                request_from: from,
-                request_to: to,
-            },
-        );
-        self.write_event(&TraceEvent::Request(RequestEvent {
-            ts: self.elapsed(),
-            protocol,
-            from: format!("{from:?}"),
-            to: format!("{to:?}"),
-            id,
-            method,
-            session,
-            params,
-        }));
     }
 
     /// Write a response event.
@@ -278,28 +254,6 @@ impl TraceWriter {
         }));
     }
 
-    /// Write a notification event.
-    fn notification(
-        &mut self,
-        protocol: MessageProtocol,
-        from: ComponentIndex,
-        to: ComponentIndex,
-        method: impl Into<String>,
-        session: Option<String>,
-        mut params: serde_json::Value,
-    ) {
-        redact_credentials(&mut params);
-        self.write_event(&TraceEvent::Notification(NotificationEvent {
-            ts: self.elapsed(),
-            protocol,
-            from: format!("{from:?}"),
-            to: format!("{to:?}"),
-            method: method.into(),
-            session,
-            params,
-        }));
-    }
-
     /// Trace a raw JSON-RPC message being sent from one component to another.
     fn trace_message(&mut self, traced_message: TracedMessage) {
         let TracedMessage {
@@ -320,46 +274,18 @@ impl TraceWriter {
         // * Incoming requests/notifications targeting the AGENT.
 
         match message {
-            RawJsonRpcMessage::Request(req) => {
-                let MessageInfo {
-                    successor,
-                    id,
-                    protocol,
-                    method,
-                    params,
-                } = MessageInfo::from_request(req);
-
-                self.trace_request_or_notification(
-                    incoming,
-                    component_index,
-                    successor_index,
-                    successor,
-                    id,
-                    protocol,
-                    method,
-                    params,
-                );
-            }
-            RawJsonRpcMessage::Notification(notification) => {
-                let MessageInfo {
-                    successor,
-                    id,
-                    protocol,
-                    method,
-                    params,
-                } = MessageInfo::from_notification(notification);
-
-                self.trace_request_or_notification(
-                    incoming,
-                    component_index,
-                    successor_index,
-                    successor,
-                    id,
-                    protocol,
-                    method,
-                    params,
-                );
-            }
+            RawJsonRpcMessage::Request(req) => self.trace_request_or_notification(
+                incoming,
+                component_index,
+                successor_index,
+                MessageInfo::from_request(req),
+            ),
+            RawJsonRpcMessage::Notification(notification) => self.trace_request_or_notification(
+                incoming,
+                component_index,
+                successor_index,
+                MessageInfo::from_notification(notification),
+            ),
             RawJsonRpcMessage::Response(resp) => {
                 // Lookup the response by its id.
                 // All of the messages we are intercepting go to our proxies,
@@ -384,19 +310,14 @@ impl TraceWriter {
         }
     }
 
-    #[expect(clippy::too_many_arguments)]
     fn trace_request_or_notification(
         &mut self,
         incoming: Incoming,
         component_index: ComponentIndex,
         successor_index: ComponentIndex,
-        successor: Successor,
-        id: Option<RawJsonRpcId>,
-        protocol: MessageProtocol,
-        method: String,
-        params: serde_json::Value,
+        info: MessageInfo,
     ) {
-        let (from, to) = match (successor, incoming, component_index, successor_index) {
+        let (from, to) = match (info.successor, incoming, component_index, successor_index) {
             // An incoming request/notification to a proxy from its predecessor.
             (Successor(false), Incoming(true), ComponentIndex::Proxy(proxy_index), _) => (
                 ComponentIndex::predecessor_of(proxy_index),
@@ -422,14 +343,46 @@ impl TraceWriter {
             _ => return,
         };
 
-        match id {
-            Some(id) => {
-                self.request(protocol, from, to, id_to_json(&id), method, None, params);
-            }
-            None => {
-                self.notification(protocol, from, to, method, None, params);
-            }
-        }
+        let MessageInfo {
+            id,
+            protocol,
+            method,
+            mut params,
+            ..
+        } = info;
+        redact_credentials(&mut params);
+        let event = if let Some(id) = id {
+            let id = id_to_json(&id);
+            self.request_details.insert(
+                id.clone(),
+                RequestDetails {
+                    protocol,
+                    request_from: from,
+                    request_to: to,
+                },
+            );
+            TraceEvent::Request(RequestEvent {
+                ts: self.elapsed(),
+                protocol,
+                from: format!("{from:?}"),
+                to: format!("{to:?}"),
+                id,
+                method,
+                session: None,
+                params,
+            })
+        } else {
+            TraceEvent::Notification(NotificationEvent {
+                ts: self.elapsed(),
+                protocol,
+                from: format!("{from:?}"),
+                to: format!("{to:?}"),
+                method,
+                session: None,
+                params,
+            })
+        };
+        self.write_event(&event);
     }
 
     /// Spawn a trace writer task.
@@ -521,7 +474,7 @@ impl TraceHandle {
     }
 }
 
-/// Convert a JSON-RPC id to serde_json::Value.
+/// Convert a JSON-RPC id to `serde_json::Value`.
 fn id_to_json(id: &RawJsonRpcId) -> serde_json::Value {
     serde_json::to_value(id).expect("RawJsonRpcId serializes infallibly")
 }

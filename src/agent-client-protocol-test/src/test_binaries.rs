@@ -62,11 +62,14 @@ pub fn testy_binary() -> PathBuf {
     path
 }
 
-/// Returns an AcpAgent configured for the test agent.
+/// Returns an `AcpAgent` configured for the test agent.
+///
+/// # Panics
+///
+/// Panics if the `testy` binary has not been built.
 #[must_use]
 pub fn testy() -> agent_client_protocol::AcpAgent {
-    agent_client_protocol::AcpAgent::from_args([testy_binary().to_string_lossy().to_string()])
-        .expect("failed to create test agent")
+    agent_client_protocol::AcpAgent::new(agent_client_protocol::AcpAgentConfig::new(testy_binary()))
 }
 
 /// Returns the path to the mcp-echo-server binary, asserting it exists.
@@ -77,7 +80,7 @@ pub fn mcp_echo_server_binary() -> PathBuf {
     path
 }
 
-/// Returns the path to the arrow_proxy example, asserting it exists.
+/// Returns the path to the `arrow_proxy` example, asserting it exists.
 #[must_use]
 pub fn arrow_proxy_example() -> PathBuf {
     let path = debug_example("arrow_proxy");
