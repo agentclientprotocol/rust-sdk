@@ -3,11 +3,9 @@
 //! Plan operations and subagent sessions are stable, so the v1 tests here run
 //! without any feature.
 
-#![allow(dead_code, unused_imports)]
-
+use agent_client_protocol::JsonRpcMessage;
 use agent_client_protocol::schema::MaybeUndefined;
 use agent_client_protocol::v1::schema as v1;
-use agent_client_protocol::{JsonRpcMessage, JsonRpcResponse};
 use serde_json::{Value, json};
 
 /// Parse `params` as `method` into `E`, check the parsed method, and check
@@ -20,14 +18,6 @@ fn assert_message_round_trips<E: JsonRpcMessage>(method: &str, params: &Value) -
     assert_eq!(untyped.method(), method);
     assert_eq!(untyped.params(), params, "{method} params round trip");
     parsed
-}
-
-/// Parsing `params` as `method` into `E` fails with `-32602`.
-fn assert_invalid_params<E: JsonRpcMessage>(method: &str, params: &Value) {
-    let error = E::parse_message(method, params)
-        .err()
-        .unwrap_or_else(|| panic!("{method} should reject {params}"));
-    assert_eq!(i32::from(error.code), -32602, "{method} error code");
 }
 
 /// A `session/update` notification's params for `update`.
@@ -170,7 +160,15 @@ mod v2_changes {
     use indexmap::IndexMap;
     use serde_json::{Value, json};
 
-    use super::{assert_invalid_params, assert_message_round_trips, session_update};
+    use super::{assert_message_round_trips, session_update};
+
+    /// Parsing `params` as `method` into `E` fails with `-32602`.
+    fn assert_invalid_params<E: JsonRpcMessage>(method: &str, params: &Value) {
+        let error = E::parse_message(method, params)
+            .err()
+            .unwrap_or_else(|| panic!("{method} should reject {params}"));
+        assert_eq!(i32::from(error.code), -32602, "{method} error code");
+    }
 
     fn parse_update(update: Value) -> v2::SessionUpdate {
         let parsed = assert_message_round_trips::<v2::AgentNotification>(
