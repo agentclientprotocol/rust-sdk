@@ -1442,7 +1442,7 @@ Client projections should also follow these rules:
 
 ### Schema 1.21
 
-Schema 1.21 changes no message. It only affects how you name a type:
+Schema 1.21 changes Rust types, not the wire format:
 
 - `agent_client_protocol::schema::IndexMap` is the map type of the schema's
   ordered maps: the `fields` of every `Other*` variant,
@@ -1459,5 +1459,12 @@ Schema 1.21 changes no message. It only affects how you name a type:
   let fields = IndexMap::from([("reason".to_string(), json!("rate_limited"))]);
   let state = StateUpdate::Other(OtherStateUpdate::new("_paused", fields));
   ```
+
+- As of 1.21.1, two preview v2 variants take boxed payloads. When constructing
+  `v2::schema::SessionConfigOptionValue::Other(other)`, use
+  `SessionConfigOptionValue::from(other)` instead. For
+  `v2::schema::ToolCallContent::Diff(diff)`, use `ToolCallContent::from(diff)`.
+  Both conversions accept the unboxed payload. When matching an owned variant,
+  `*other` or `*diff` gives you the owned payload again. The v1 types are unchanged.
 
 There are no new rules for agents or clients.
