@@ -121,8 +121,6 @@ agent-client-protocol-test.workspace = true
 clap.workspace = true
 expect-test.workspace = true
 futures = { workspace = true, features = ["executor"] }
-# The schema keeps wire maps in `IndexMap`s, which tests build by name.
-indexmap.workspace = true
 tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util.workspace = true
 tracing-subscriber.workspace = true

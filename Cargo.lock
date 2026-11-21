@@ -17,7 +17,6 @@ dependencies = [
  "expect-test",
  "futures",
  "futures-concurrency",
- "indexmap 2.14.2",
  "rustc-hash",
  "rustix",
  "schemars 1.2.3",
@@ -145,9 +144,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-schema"
-version = "1.20.0"
+version = "1.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "563da494a1e024efcd6dfce15e5d0be6b08b3317f93c134a62a00f348032a762"
+checksum = "cb918db48e91e5f68d50a9c50de01f492cac2a7eab57a790731a6201c69edf23"
 dependencies = [
  "anyhow",
  "derive_more",

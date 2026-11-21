@@ -163,9 +163,9 @@ fn protocol_v2_elicitation_variants_are_jsonrpc_mapped() -> Result<(), Error> {
 #[cfg(feature = "unstable_protocol_v2")]
 #[tokio::test(flavor = "current_thread")]
 async fn v2_agent_can_elicit_from_v2_client_before_prompt_completion() -> Result<(), Error> {
+    use agent_client_protocol::schema::IndexMap;
     use agent_client_protocol::{Agent, Client};
     use agent_client_protocol::{schema::ProtocolVersion, v2::schema as v2};
-    use indexmap::IndexMap;
 
     fn v2_initialize_response_with_session(
         protocol_version: ProtocolVersion,

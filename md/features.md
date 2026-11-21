@@ -210,9 +210,12 @@ Schema 1.20 adds no feature and removes two: `unstable_plan_operations` and
 `unstable_subagents`, whose surfaces are stable. Drop both from your
 `Cargo.toml`. ACP v2 is in Preview from this release and stays behind
 `unstable_protocol_v2`. Several v2 types change with it, and the schema's maps
-are now `indexmap::IndexMap`s, so add `indexmap = "2"` to your dependencies if
-you build unknown variants, elicitation forms, or provider headers by name.
-See [Schema 1.20](./protocol-v2.md#schema-120).
+are now `IndexMap`s. See [Schema 1.20](./protocol-v2.md#schema-120).
+
+Schema 1.21 adds no feature. The SDK re-exports the map type as
+`agent_client_protocol::schema::IndexMap`, so building unknown variants,
+elicitation forms, or provider headers by name needs no `indexmap` dependency
+of your own. See [Schema 1.21](./protocol-v2.md#schema-121).
 
 The schema's `unstable_proxy_chains` feature is not an SDK feature: the SDK
 always enables it, because the `Proxy` and `Conductor` roles and the conductor
