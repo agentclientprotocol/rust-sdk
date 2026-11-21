@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [5.5.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v5.4.0...agent-client-protocol-http-v5.5.0) - 2026-11-21
+
+### Other
+
+- *(acp)* audit Clippy exceptions and enforce API documentation ([#517](https://github.com/agentclientprotocol/rust-sdk/pull/517))
+
 ## [5.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v3.6.0...agent-client-protocol-http-v5.0.0) - 2026-11-02
 
 ### Added
