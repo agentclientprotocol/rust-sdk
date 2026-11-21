@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [5.5.1](https://github.com/agentclientprotocol/rust-sdk/compare/v5.5.0...v5.5.1) - 2026-11-21
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [5.5.0](https://github.com/agentclientprotocol/rust-sdk/compare/v5.4.0...v5.5.0) - 2026-11-21
 
 ### Added
