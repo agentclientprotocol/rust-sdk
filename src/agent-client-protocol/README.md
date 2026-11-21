@@ -48,7 +48,7 @@ Client.v1()
 Every connection names its protocol version. `Client.v1()`, `Agent.v1()`, and
 `Proxy.v1()` start stable v1 connections; their types (`ConnectionTo`,
 `Builder`, `Responder`, `SessionBuilder`, `ActiveSession`, ...) are in
-`agent_client_protocol::v1`. Draft protocol v2 is opt-in through
+`agent_client_protocol::v1`. Protocol v2, which is in Preview, is opt-in through
 `unstable_protocol_v2`, and `agent_client_protocol::v2` uses the same names for
 its connection, builder and request handles. The session APIs differ:
 `v1::ActiveSession` reads updates from its own stream, while `Client.v2()`,

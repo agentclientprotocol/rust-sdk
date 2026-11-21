@@ -1,4 +1,5 @@
-#![cfg(feature = "unstable_plan_operations")]
+//! Plan operations are stable since schema 1.20. v1 gates them on the
+//! client's `plan` capability, and v2 needs no capability.
 
 use agent_client_protocol::JsonRpcMessage;
 use agent_client_protocol::v1::schema::{
@@ -136,7 +137,7 @@ fn v1_markdown_plan_path_names_the_plan_file() {
 
 #[cfg(feature = "unstable_protocol_v2")]
 #[test]
-fn draft_v2_markdown_path_and_removal_operations_are_routed() {
+fn v2_markdown_path_and_removal_operations_are_routed() {
     use agent_client_protocol::v2::schema as v2;
 
     let notification = v2::UpdateSessionNotification::new(

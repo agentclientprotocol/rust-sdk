@@ -617,7 +617,7 @@ where
     feature = "unstable_protocol_v2"
 ))]
 mod tests {
-    use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+    use std::{path::PathBuf, sync::Arc};
 
     use serde::Serialize;
     use serde_json::{Value, json};
@@ -653,7 +653,7 @@ mod tests {
     fn existing_server() -> McpServer {
         McpServer::Other(v2::OtherMcpServer::new(
             "_future_transport",
-            BTreeMap::from([("futureOption".to_owned(), json!({ "nested": true }))]),
+            [("futureOption".to_owned(), json!({ "nested": true }))].into(),
         ))
     }
 

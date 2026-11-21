@@ -165,7 +165,7 @@ fn protocol_v2_elicitation_variants_are_jsonrpc_mapped() -> Result<(), Error> {
 async fn v2_agent_can_elicit_from_v2_client_before_prompt_completion() -> Result<(), Error> {
     use agent_client_protocol::{Agent, Client};
     use agent_client_protocol::{schema::ProtocolVersion, v2::schema as v2};
-    use std::collections::BTreeMap;
+    use indexmap::IndexMap;
 
     fn v2_initialize_response_with_session(
         protocol_version: ProtocolVersion,
@@ -227,7 +227,7 @@ async fn v2_agent_can_elicit_from_v2_client_before_prompt_completion() -> Result
                     v2::ElicitationMode::Form(v2::ElicitationFormMode { .. })
                 ));
 
-                let content = BTreeMap::from([(
+                let content = IndexMap::from([(
                     "name".to_string(),
                     v2::ElicitationContentValue::from("Ada"),
                 )]);

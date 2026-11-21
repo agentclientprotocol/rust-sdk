@@ -1,7 +1,6 @@
 #![cfg(feature = "unstable_protocol_v2")]
 
 use std::{
-    collections::BTreeMap,
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -45,7 +44,7 @@ fn meta() -> v2::Meta {
 fn existing_server() -> v2::McpServer {
     v2::McpServer::Other(v2::OtherMcpServer::new(
         "_future_transport",
-        BTreeMap::from([("futureOption".to_owned(), json!({ "nested": true }))]),
+        [("futureOption".to_owned(), json!({ "nested": true }))].into(),
     ))
 }
 

@@ -37,11 +37,15 @@ struct AgentState {
     next_session_id: u64,
     next_message_id: u64,
     next_prompt_ticket: u64,
+    next_activity: u64,
 }
 
 #[derive(Clone, Debug)]
 struct Session {
     cwd: schema::AbsolutePath,
+    /// When the session last had activity: its creation or its latest
+    /// inserted user message. `session/list` returns the most recent first.
+    last_activity: u64,
     active: bool,
     foreground_work: bool,
     cancelled: bool,
@@ -93,12 +97,15 @@ impl EchoAgent {
         reject_system_prompt(request.system_prompt.as_ref())?;
         let mut state = self.state.lock().expect("session state lock poisoned");
         state.next_session_id += 1;
+        state.next_activity += 1;
+        let last_activity = state.next_activity;
         let session_id = schema::SessionId::new(format!("echo-session-{}", state.next_session_id));
         state.sessions.insert(
             session_id.clone(),
             // `additionalDirectories` is not advertised, so it is ignored.
             Session {
                 cwd: request.cwd,
+                last_activity,
                 active: true,
                 foreground_work: false,
                 cancelled: false,
@@ -111,23 +118,23 @@ impl EchoAgent {
         Ok(session_id)
     }
 
+    /// The sessions in `cwd`, or all of them, with the most recent activity
+    /// first.
     fn list_sessions(&self, request: &schema::ListSessionsRequest) -> Vec<schema::SessionInfo> {
         let state = self.state.lock().expect("session state lock poisoned");
         let mut sessions = state
             .sessions
             .iter()
             .filter(|(_, session)| request.cwd.as_ref().is_none_or(|cwd| cwd == &session.cwd))
+            .collect::<Vec<_>>();
+        sessions.sort_by_key(|(_, session)| std::cmp::Reverse(session.last_activity));
+        sessions
+            .into_iter()
             .map(|(session_id, session)| {
                 schema::SessionInfo::new(session_id.clone(), session.cwd.clone())
                     .title(SESSION_TITLE)
             })
-            .collect::<Vec<_>>();
-        sessions.sort_by(|left, right| {
-            left.session_id
-                .to_string()
-                .cmp(&right.session_id.to_string())
-        });
-        sessions
+            .collect()
     }
 
     /// Reattach to a session. Returns the history to replay when the client
@@ -438,13 +445,11 @@ impl EchoAgent {
         idempotency_key: Option<schema::IdempotencyKey>,
         update: schema::SessionUpdate,
     ) {
-        if let Some(session) = self
-            .state
-            .lock()
-            .expect("session state lock poisoned")
-            .sessions
-            .get_mut(session_id)
-        {
+        let mut state = self.state.lock().expect("session state lock poisoned");
+        state.next_activity += 1;
+        let last_activity = state.next_activity;
+        if let Some(session) = state.sessions.get_mut(session_id) {
+            session.last_activity = last_activity;
             session.history.push(update);
             if let Some(key) = idempotency_key
                 && let Some(KeyedPrompt::Pending { inserted, .. }) = session
@@ -931,6 +936,34 @@ mod tests {
             ),
             Ok(PromptAdmission::RetryOfPending { .. })
         ));
+    }
+
+    #[test]
+    fn lists_sessions_with_the_most_recent_activity_first() {
+        let agent = EchoAgent::default();
+        let first = agent
+            .create_session(schema::NewSessionRequest::new("/tmp"))
+            .expect("session should be created");
+        let second = agent
+            .create_session(schema::NewSessionRequest::new("/tmp"))
+            .expect("session should be created");
+        let listed = || {
+            agent
+                .list_sessions(&schema::ListSessionsRequest::new())
+                .into_iter()
+                .map(|session| session.session_id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(listed(), [second.clone(), first.clone()]);
+
+        // An inserted user message is the first session's latest activity.
+        let message_id = schema::MessageId::new("user-message-1");
+        let user_message = schema::SessionUpdate::UserMessage(
+            schema::UserMessage::new(message_id.clone())
+                .content(vec![schema::ContentBlock::from("hello")]),
+        );
+        agent.record_user_message(&first, &message_id, None, user_message);
+        assert_eq!(listed(), [first, second]);
     }
 
     #[test]

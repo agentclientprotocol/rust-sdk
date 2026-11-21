@@ -262,7 +262,7 @@ mod v2_methods {
 
     /// Subagent updates, session-directed messages, the `unknown` state,
     /// `subagent` background work and `session` tool call content are part of
-    /// v2 without `unstable_subagents`.
+    /// v2 and need no feature of their own.
     #[test]
     fn v2_subagent_surface_is_typed_without_the_subagents_feature() {
         assert!(matches!(

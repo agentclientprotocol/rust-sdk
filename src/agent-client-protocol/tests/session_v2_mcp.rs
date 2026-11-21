@@ -1,7 +1,6 @@
 #![cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
 
 use std::{
-    collections::BTreeMap,
     future::{Future, ready},
     path::PathBuf,
     sync::{
@@ -275,7 +274,7 @@ async fn v2_session_mcp_attachment_is_ready_during_setup_and_lives_for_connectio
     let first_round_trip_tx = round_trip_tx.clone();
     let existing_mcp_server = v2::McpServer::Other(v2::OtherMcpServer::new(
         "_test_transport",
-        BTreeMap::from([("extension".to_owned(), json!({"preserved": true}))]),
+        [("extension".to_owned(), json!({"preserved": true}))].into(),
     ));
     let expected_existing_mcp_server = existing_mcp_server.clone();
     let setup_meta = Map::from_iter([("setup".to_owned(), json!({"preserved": true}))]);
@@ -449,7 +448,7 @@ async fn v2_fork_mcp_attachment_preserves_request_and_lives_for_connection() -> 
     let expected_additional_directory = v2::AbsolutePath::new(additional_directory.clone());
     let existing_mcp_server = v2::McpServer::Other(v2::OtherMcpServer::new(
         "_test_transport",
-        BTreeMap::from([("extension".to_owned(), json!({"preserved": true}))]),
+        [("extension".to_owned(), json!({"preserved": true}))].into(),
     ));
     let expected_existing_mcp_server = existing_mcp_server.clone();
     let setup_meta = Map::from_iter([("setup".to_owned(), json!({"preserved": true}))]);
@@ -643,7 +642,7 @@ async fn v2_resume_mcp_attachment_preserves_request_and_lives_for_connection() -
     let expected_additional_directory = v2::AbsolutePath::new(additional_directory.clone());
     let existing_mcp_server = v2::McpServer::Other(v2::OtherMcpServer::new(
         "_test_transport",
-        BTreeMap::from([("extension".to_owned(), json!({"preserved": true}))]),
+        [("extension".to_owned(), json!({"preserved": true}))].into(),
     ));
     let expected_existing_mcp_server = existing_mcp_server.clone();
     let replay_meta = Map::from_iter([("replay".to_owned(), json!({"preserved": true}))]);

@@ -67,8 +67,11 @@ projection records how many leading updates precede it in `history_len`. The
 marker, current-state synchronization, and later updates are live. A resume
 that fails is never exposed, so a truncated replay never reaches a view. An
 agent that responds successfully without `replay_complete` violates the
-protocol. The response still certifies the updates before it, so the example
-counts them all as history.
+protocol. The response still confirms that the requested replay finished, so
+the example counts the updates before it as history. This example only resumes
+a session that is not active on its connection. A client that resumes a
+session that is already active can also receive a live update before the
+marker, if the agent sent it before it received the request.
 
 Do not generalize the next `idle` state into completion of a particular prompt:
 v2 state is session-wide, updates have no prompt identity, and background

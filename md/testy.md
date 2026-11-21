@@ -128,8 +128,9 @@ snapshot is not another completed turn.
 
 Prompts may contain only the baseline `text` and `resource_link` content blocks; any other block
 is rejected with `-32602` before the turn begins. An empty `prompt` array is likewise rejected with
-`-32602` without inserting a user message. `session/list` returns every session in one page
-and never issues `nextCursor`, so any `cursor` is rejected with `-32602`.
+`-32602` without inserting a user message. `session/list` returns every session in one page,
+with the most recent activity first, and never issues `nextCursor`, so any `cursor` is rejected
+with `-32602`. A session's activity is its creation or its latest inserted user message.
 
 A prompt that arrives while the session has foreground work is held, not rejected. Held prompts
 are inserted in received order once the current work ends, and their responses stay pending until

@@ -957,7 +957,16 @@ fn sdk_supported_v2_method_surface_is_jsonrpc_mapped() -> Result<(), Error> {
         RequestPermissionRequest,
         RequestPermissionResponse,
         "session/request_permission",
-        v2::RequestPermissionRequest::new("session-1", "Run command?", Vec::new()),
+        // A permission request offers at least one option.
+        v2::RequestPermissionRequest::new(
+            "session-1",
+            "Run command?",
+            vec![v2::PermissionOption::new(
+                "reject",
+                "Reject",
+                v2::PermissionOptionKind::RejectOnce,
+            )],
+        ),
         v2::RequestPermissionResponse::new(v2::CancelledPermissionOutcome::new().into())
     );
 

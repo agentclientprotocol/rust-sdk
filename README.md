@@ -50,7 +50,7 @@ forward proxied setup without coupling later session events to that response.
 
 - **API reference** for individual crates is on [docs.rs/agent-client-protocol](https://docs.rs/agent-client-protocol).
 - **Design and architecture documentation** lives in the mdbook at [agentclientprotocol.github.io/rust-sdk](https://agentclientprotocol.github.io/rust-sdk/). Source is in [`md/`](./md/).
-- **Draft protocol v2** setup, version-typed connections, and high-level
+- **Protocol v2** (in Preview) setup, version-typed connections, and high-level
   session usage are covered in [Protocol V2](./md/protocol-v2.md). To run a
   complete v2 agent/client pair first, use the
   [Runnable V2 Quickstart](./md/protocol-v2-quickstart.md).

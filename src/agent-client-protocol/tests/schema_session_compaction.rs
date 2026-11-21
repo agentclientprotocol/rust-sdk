@@ -70,15 +70,14 @@ fn v1_compaction_capability_and_updates_pass_through_session_notifications() {
 
 #[cfg(feature = "unstable_protocol_v2")]
 #[test]
-fn draft_v2_compaction_updates_pass_through_session_notifications() {
+fn v2_compaction_updates_pass_through_session_notifications() {
     use agent_client_protocol::v2::schema as v2;
 
     let notification = v2::UpdateSessionNotification::new(
         "session-1",
-        v2::SessionUpdate::CompactionUpdate(v2::CompactionUpdate::new(
-            "compaction-1",
-            v2::CompactionStatus::Completed,
-        )),
+        v2::SessionUpdate::CompactionUpdate(
+            v2::CompactionUpdate::new("compaction-1").status(v2::CompactionStatus::Completed),
+        ),
     );
     let untyped = notification.to_untyped_message().unwrap();
     assert_eq!(untyped.method, "session/update");
