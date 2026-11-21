@@ -1,5 +1,4 @@
-//! Schema 1.21 re-exports `IndexMap`, the map type of the schema's ordered
-//! maps. The SDK passes it on as `agent_client_protocol::schema::IndexMap`.
+//! Checks the SDK's `IndexMap` re-export and the boxed v2 payloads from schema 1.21.1.
 
 use agent_client_protocol::schema::IndexMap;
 use agent_client_protocol::v1::schema as v1;
@@ -31,7 +30,7 @@ fn reexported_map_is_the_type_of_the_schema_fields() {
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
-mod v2_maps {
+mod v2_tests {
     use agent_client_protocol::schema::IndexMap;
     use agent_client_protocol::v2::schema as v2;
     use serde_json::json;
@@ -61,5 +60,34 @@ mod v2_maps {
             serde_json::to_string(&action).unwrap(),
             r#"{"content":{"zeta":"z","alpha":true}}"#
         );
+    }
+
+    #[test]
+    fn custom_config_value_converts_to_a_boxed_variant() {
+        let other =
+            v2::OtherSessionConfigOptionValue::new("_text", json!("hello"), IndexMap::new());
+        let value = v2::SessionConfigOptionValue::from(other.clone());
+        assert_eq!(
+            serde_json::to_value(&value).unwrap(),
+            json!({"type": "_text", "value": "hello"})
+        );
+        let v2::SessionConfigOptionValue::Other(boxed) = value else {
+            panic!("expected a custom config value");
+        };
+        assert_eq!(*boxed, other);
+    }
+
+    #[test]
+    fn diff_converts_to_boxed_tool_call_content() {
+        let diff = v2::Diff::new(vec![v2::DiffChange::modify("/repo/file.txt")]);
+        let content = v2::ToolCallContent::from(diff.clone());
+        assert_eq!(
+            serde_json::to_value(&content).unwrap(),
+            json!({"type": "diff", "changes": [{"operation": "modify", "path": "/repo/file.txt"}]})
+        );
+        let v2::ToolCallContent::Diff(boxed) = content else {
+            panic!("expected diff content");
+        };
+        assert_eq!(*boxed, diff);
     }
 }
