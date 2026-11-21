@@ -38,11 +38,16 @@ struct V1SessionGuardRunner {
 }
 
 impl RunWithConnectionTo<Agent> for V1SessionGuardRunner {
-    #[expect(
-        clippy::unused_async_trait_impl,
-        reason = "the check is synchronous, the trait method is async"
-    )]
-    async fn run_with_connection_to(self, connection: ConnectionTo<Agent>) -> Result<(), Error> {
+    fn run_with_connection_to(
+        self,
+        connection: ConnectionTo<Agent>,
+    ) -> impl Future<Output = Result<(), Error>> + Send {
+        std::future::ready(self.check(connection))
+    }
+}
+
+impl V1SessionGuardRunner {
+    fn check(self, connection: ConnectionTo<Agent>) -> Result<(), Error> {
         // A v2 connection does not convert to the v1 connection type, so the
         // v1 session helpers cannot run over it.
         let error = connection

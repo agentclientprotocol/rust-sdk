@@ -1,6 +1,6 @@
 //! Stdio transport for connecting ACP components via standard input/output.
 
-use crate::{ByteStreams, ConnectTo, LineDirection, Role};
+use crate::{ByteStreams, ConnectTo, LineDirection, Role, line_direction::DebugCallback};
 use std::sync::Arc;
 
 /// A transport that connects to an ACP peer via standard input/output.
@@ -8,7 +8,7 @@ use std::sync::Arc;
 /// This is useful for building agents or proxies that communicate over stdio,
 /// which is the standard transport for MCP and ACP subprocess communication.
 pub struct Stdio {
-    debug_callback: Option<Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>>,
+    debug_callback: Option<DebugCallback>,
 }
 
 impl std::fmt::Debug for Stdio {

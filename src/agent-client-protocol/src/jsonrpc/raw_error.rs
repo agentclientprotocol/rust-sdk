@@ -32,10 +32,6 @@ pub struct RawJsonRpcError {
 /// request, notification, and queued frame.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
-#[allow(
-    clippy::exhaustive_enums,
-    reason = "JSON-RPC defines exactly these response kinds"
-)]
 pub enum RawJsonRpcResponse {
     /// A successful response.
     Result {

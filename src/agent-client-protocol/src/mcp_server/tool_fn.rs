@@ -84,17 +84,13 @@ async fn run_call<R>(
     let _finished = done_tx.send(());
 }
 
+type InvokeMut<F, P, R, Counterpart> = dyn for<'a> Fn(&'a mut F, P, McpConnectionTo<Counterpart>) -> BoxFuture<'a, Result<R, Error>>
+    + Send;
+
 struct ToolFnMutRunner<F, P, R, Counterpart: Role> {
     func: F,
     call_rx: mpsc::Receiver<QueuedCall<P, R, Counterpart>>,
-    tool_future_fn: Box<
-        dyn for<'a> Fn(
-                &'a mut F,
-                P,
-                McpConnectionTo<Counterpart>,
-            ) -> BoxFuture<'a, Result<R, Error>>
-            + Send,
-    >,
+    tool_future_fn: Box<InvokeMut<F, P, R, Counterpart>>,
 }
 
 impl<F, P, R, Counterpart, Counterpart1> RunWithConnectionTo<Counterpart1>
@@ -142,14 +138,14 @@ where
     }
 }
 
+type Invoke<F, P, R, Counterpart> = dyn for<'a> Fn(&'a F, P, McpConnectionTo<Counterpart>) -> BoxFuture<'a, Result<R, Error>>
+    + Send
+    + Sync;
+
 struct ToolFnRunner<F, P, R, Counterpart: Role> {
     func: F,
     call_rx: mpsc::Receiver<QueuedCall<P, R, Counterpart>>,
-    tool_future_fn: Box<
-        dyn for<'a> Fn(&'a F, P, McpConnectionTo<Counterpart>) -> BoxFuture<'a, Result<R, Error>>
-            + Send
-            + Sync,
-    >,
+    tool_future_fn: Box<Invoke<F, P, R, Counterpart>>,
 }
 
 impl<F, P, R, Counterpart, Counterpart1> RunWithConnectionTo<Counterpart1>
@@ -177,15 +173,7 @@ where
                     func: &'a F,
                     params: P,
                     mcp_connection: McpConnectionTo<MyRole>,
-                    tool_future_fn: &'a (
-                            dyn Fn(
-                        &'a F,
-                        P,
-                        McpConnectionTo<MyRole>,
-                    ) -> BoxFuture<'a, Result<R, Error>>
-                                + Send
-                                + Sync
-                        ),
+                    tool_future_fn: &'a Invoke<F, P, R, MyRole>,
                     result_tx: oneshot::Sender<Result<R, Error>>,
                     done_tx: oneshot::Sender<()>,
                 ) -> BoxFuture<'a, ()>

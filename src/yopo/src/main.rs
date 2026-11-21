@@ -27,7 +27,7 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "YOPO - You Only Prompt Once", long_about = None)]
-struct Args {
+struct Cli {
     /// The prompt to send to the agent
     prompt: String,
 
@@ -42,7 +42,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args = Cli::parse();
 
     // Initialize tracing to stderr
     let env_filter = if let Some(level) = args.log {
@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn accepts_agent_flags_after_argument_separator() {
         let args =
-            Args::try_parse_from(["yopo", "Hello!", "--", "cargo", "run", "--release"]).unwrap();
+            Cli::try_parse_from(["yopo", "Hello!", "--", "cargo", "run", "--release"]).unwrap();
 
         assert_eq!(args.agent_args, ["cargo", "run", "--release"]);
     }

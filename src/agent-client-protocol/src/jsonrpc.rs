@@ -89,10 +89,6 @@ use crate::{Agent, ConnectTo, RoleId};
 /// other members of the envelope are dropped. Error responses keep unknown
 /// members of the error object in [`RawJsonRpcError::extra`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(
-    clippy::exhaustive_enums,
-    reason = "JSON-RPC defines exactly these message kinds"
-)]
 pub enum RawJsonRpcMessage {
     /// A JSON-RPC request with an id and expected response.
     Request(RawJsonRpcRequest),
@@ -151,10 +147,6 @@ impl TransportFrame {
 /// [`RawJsonRpcMessage`] adds and checks. Other members of the request object
 /// are not kept: a relay that parses and re-serializes a request drops them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(
-    clippy::exhaustive_structs,
-    reason = "JSON-RPC defines exactly these request members"
-)]
 pub struct RawJsonRpcRequest {
     /// The ID the response must carry.
     pub id: RawJsonRpcId,
@@ -172,10 +164,6 @@ pub struct RawJsonRpcRequest {
 /// object are not kept: a relay that parses and re-serializes a notification
 /// drops them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(
-    clippy::exhaustive_structs,
-    reason = "JSON-RPC defines exactly these notification members"
-)]
 pub struct RawJsonRpcNotification {
     /// The notification method.
     pub method: Arc<str>,
@@ -206,10 +194,6 @@ impl From<RawJsonRpcResponse> for RawJsonRpcMessage {
 ///
 /// JSON-RPC params, when present, must be either an array or an object.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(
-    clippy::exhaustive_enums,
-    reason = "JSON-RPC params are either an array or an object"
-)]
 pub enum RawJsonRpcParams {
     /// Positional JSON-RPC params.
     Array(Vec<serde_json::Value>),
@@ -4697,13 +4681,17 @@ pub struct Responder<T: JsonRpcResponse = serde_json::Value, P: Protocol = Raw> 
     ///
     /// For incoming requests: serializes to JSON and sends over the wire.
     /// For incoming responses: sends to the waiting oneshot channel.
-    send_fn: Box<dyn FnOnce(Result<T, crate::Error>) -> Result<(), crate::Error> + Send>,
+    send_fn: ResponseFn<T, ()>,
 
     /// Answers the request with an error if no response is sent. Owns the
     /// request-local cancellation state, so it can still observe a
     /// cancellation when it fires.
     drop_guard: ResponderDropGuard,
 }
+
+type ResponseFn<T, U> = Box<dyn FnOnce(crate::Result<T>) -> crate::Result<U> + Send>;
+
+pub(crate) type RequestWithResponder<R> = (R, Responder<<R as JsonRpcRequest>::Response>);
 
 /// Sends the automatic error for a [`Responder`] dropped without responding.
 struct ResponderDropGuard {
@@ -5048,12 +5036,12 @@ pub struct ResponseRouter<T: JsonRpcResponse = serde_json::Value, P: Protocol = 
     /// The `id` of the original request.
     id: HandleId<P>,
 
-    /// The RoleId to which the original request was sent
+    /// The [`RoleId`] to which the original request was sent
     /// (and hence from which the reply is expected).
     role_id: RoleId,
 
     /// Function to send the response to the waiting task.
-    send_fn: Box<dyn FnOnce(Result<T, crate::Error>) -> Result<(), crate::Error> + Send>,
+    send_fn: ResponseFn<T, ()>,
 
     /// Shared route used to deliver a dispatch-handler error to the same waiter.
     reply_target: ResponseReplyTarget,
@@ -5683,10 +5671,13 @@ impl Dispatch {
     ///
     /// * `Ok(Ok(typed))` if this is a request of the requested type
     /// * `Ok(Err(self))` if this is not a matching request
-    /// * `Err` if its method matches the requested type but parsing fails
+    ///
+    /// # Errors
+    ///
+    /// Returns the parsing error if the method matches but its params cannot be decoded.
     pub fn into_request<Req: JsonRpcRequest>(
         self,
-    ) -> Result<Result<(Req, Responder<Req::Response>), Dispatch>, crate::Error> {
+    ) -> crate::Result<Result<RequestWithResponder<Req>, Dispatch>> {
         match self {
             Dispatch::Request(msg, responder) => {
                 if !Req::matches_method(&msg.method) {
@@ -5923,8 +5914,7 @@ pub struct SentRequest<T, P: Protocol = Raw> {
     /// Converts the raw response into the typed result. It receives error
     /// responses too, so [`SentRequest::recover_error`] can map an error to a
     /// success.
-    to_result:
-        Box<dyn FnOnce(Result<serde_json::Value, crate::Error>) -> Result<T, crate::Error> + Send>,
+    to_result: ResponseFn<serde_json::Value, T>,
     cancellation: SentRequestCancellation,
     response_ordering: ResponseOrdering,
     /// Cancellation markers of other (incoming) requests whose cancellation
@@ -9009,10 +8999,10 @@ mod tests {
             UntypedMessage::new("stale", serde_json::json!({}))
                 .expect("test notification should serialize"),
         );
-        let handled =
+        let outcome =
             futures::executor::block_on(handler.dyn_handle_dispatch_from(message, connection))
                 .expect("inactive handler should decline cleanly");
-        assert!(matches!(handled, Handled::No { retry: false, .. }));
+        assert!(matches!(outcome, Handled::No { retry: false, .. }));
     }
 
     #[test]

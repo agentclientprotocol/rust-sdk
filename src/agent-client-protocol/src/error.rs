@@ -263,7 +263,7 @@ impl PartialEq for Error {
 
 #[expect(
     clippy::missing_fields_in_debug,
-    reason = "the origin marker is not part of the error's value"
+    reason = "Debug must match the v1 wire error, without the SDK's private origin marker"
 )]
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

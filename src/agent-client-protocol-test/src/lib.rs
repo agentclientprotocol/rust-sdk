@@ -1,6 +1,15 @@
-use std::future::Future;
+//! Fixtures for the Rust SDK's tests and documentation examples.
+//!
+//! The request and notification types here are example JSON-RPC methods,
+//! not ACP methods. For tests that need an agent that answers ACP requests,
+//! use [`testy`].
 
-use agent_client_protocol::*;
+use std::future::{Future, Ready, ready};
+
+use agent_client_protocol::{
+    Builder, Client, ConnectTo, Error, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest,
+    JsonRpcResponse, Result, Role, UntypedMessage,
+};
 use serde::{Deserialize, Serialize};
 
 pub mod arrow_proxy;
@@ -201,26 +210,35 @@ impl_jr_response_payload!(ValidateResponse, "validateRequest");
 impl_jr_response_payload!(ExecuteResponse, "executeRequest");
 impl_jr_response_payload!(OtherResponse, "otherRequest");
 
-// Mock async functions
-#[expect(clippy::unused_async)]
-pub async fn expensive_analysis(_data: &str) -> Result<String, crate::Error> {
-    Ok("analysis result".into())
+/// Stands in for async analysis and immediately returns `"analysis result"`.
+pub fn expensive_analysis(_data: &str) -> Ready<Result<String, crate::Error>> {
+    ready(Ok("analysis result".into()))
 }
 
-#[expect(clippy::unused_async)]
-pub async fn expensive_operation(_data: &str) -> Result<String, crate::Error> {
-    Ok("operation result".into())
+/// Stands in for async processing and immediately returns `"operation result"`.
+pub fn expensive_operation(_data: &str) -> Ready<Result<String, crate::Error>> {
+    ready(Ok("operation result".into()))
 }
 
+/// Stand-in for a fallible state update in documentation examples.
+///
+/// # Errors
+///
+/// This mock always succeeds.
 pub fn update_session_state(_update: &SessionUpdate) -> Result<(), crate::Error> {
     Ok(())
 }
 
+/// Stand-in for fallible request processing in documentation examples.
+///
+/// # Errors
+///
+/// This mock always returns a copy of `data`.
 pub fn process(data: &str) -> Result<String, crate::Error> {
     Ok(data.to_string())
 }
 
-// Helper to create a mock connection for examples
+/// Returns a v1 client builder for examples. No transport is connected.
 pub fn mock_connection() -> Builder<
     Client,
     agent_client_protocol::NullHandler,

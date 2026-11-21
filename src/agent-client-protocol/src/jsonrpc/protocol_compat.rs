@@ -679,8 +679,7 @@ mod imp {
             let wire_version = if let Some(params) =
                 outgoing_initialize_params(mode, remote_style, &mut message)?
             {
-                set_protocol_version(params, mode.api)?;
-                validate_native_v2_initialize_request(mode, params)?;
+                prepare_initialize_request(mode, params)?;
                 self.begin_outgoing_initialize(mode)?;
                 mode.api
             } else {
@@ -800,8 +799,7 @@ mod imp {
                 let negotiated = negotiated
                     .ok_or_else(|| unexpected_initialize_response(mode.initialization_role))?;
                 if let Err(error) = ensure_matching_protocol_version(method, mode.api, negotiated)
-                    .and_then(|()| set_protocol_version(&mut value, negotiated))
-                    .and_then(|()| validate_native_v2_initialize_response(mode, &value))
+                    .and_then(|()| prepare_initialize_response(mode, &mut value))
                 {
                     self.fail_initialize();
                     return Err(error);
@@ -860,8 +858,7 @@ mod imp {
                 );
             }
 
-            set_protocol_version(&mut message.params, mode.api)?;
-            validate_native_v2_initialize_request(mode, message.params())?;
+            prepare_initialize_request(mode, &mut message.params)?;
             self.begin_incoming_initialize(mode, id)?;
             Ok(message)
         }
@@ -908,8 +905,7 @@ mod imp {
                     return Err(required_protocol_version(mode.api, wire_version));
                 }
                 ensure_matching_protocol_version("initialize", pending, wire_version)?;
-                set_protocol_version(&mut value, wire_version)?;
-                validate_native_v2_initialize_response(mode, &value)?;
+                prepare_initialize_response(mode, &mut value)?;
                 Ok(InitializeResponseCheck::Negotiated(wire_version))
             })();
 
@@ -1221,15 +1217,11 @@ mod imp {
         Ok(())
     }
 
-    // The shared guard stays fallible when v2 validation is compiled out.
-    #[cfg_attr(
-        not(feature = "unstable_protocol_v2"),
-        allow(clippy::unnecessary_wraps)
-    )]
-    fn validate_native_v2_initialize_request(
+    fn prepare_initialize_request(
         mode: AcpProtocolMode,
-        value: &serde_json::Value,
+        value: &mut serde_json::Value,
     ) -> Result<(), crate::Error> {
+        set_protocol_version(value, mode.api)?;
         #[cfg(feature = "unstable_protocol_v2")]
         if mode.initialization_role != InitializationRole::Unchecked {
             <crate::v2::schema::InitializeRequest as crate::JsonRpcMessage>::parse_message(
@@ -1237,19 +1229,14 @@ mod imp {
                 value,
             )?;
         }
-        #[cfg(not(feature = "unstable_protocol_v2"))]
-        let _ = (mode, value);
         Ok(())
     }
 
-    #[cfg_attr(
-        not(feature = "unstable_protocol_v2"),
-        allow(clippy::unnecessary_wraps)
-    )]
-    fn validate_native_v2_initialize_response(
+    fn prepare_initialize_response(
         mode: AcpProtocolMode,
-        value: &serde_json::Value,
+        value: &mut serde_json::Value,
     ) -> Result<(), crate::Error> {
+        set_protocol_version(value, mode.api)?;
         #[cfg(feature = "unstable_protocol_v2")]
         if mode.initialization_role != InitializationRole::Unchecked {
             <crate::v2::schema::InitializeResponse as crate::JsonRpcResponse>::from_json(
@@ -1257,8 +1244,6 @@ mod imp {
                 value.clone(),
             )?;
         }
-        #[cfg(not(feature = "unstable_protocol_v2"))]
-        let _ = (mode, value);
         Ok(())
     }
 

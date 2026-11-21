@@ -14,9 +14,7 @@ use async_process::Child;
 use serde::{Deserialize, Serialize};
 use std::pin::pin;
 
-use crate::{Client, Conductor, LineDirection, Role};
-
-type DebugCallback = Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>;
+use crate::{Client, Conductor, LineDirection, Role, line_direction::DebugCallback};
 
 const STDERR_CAPTURE_LIMIT: usize = 64 * 1024;
 const STDERR_READ_BUFFER_SIZE: usize = 8 * 1024;

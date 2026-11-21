@@ -1123,9 +1123,10 @@ where
 /// [`ActiveSession::read_update`].
 #[non_exhaustive]
 #[derive(Debug)]
+// TODO(next major): revisit boxing the public Message payload. It is the common case.
 #[allow(
     clippy::large_enum_variant,
-    reason = "messages vastly outnumber prompt responses; boxing would add a heap allocation"
+    reason = "the size difference depends on target and unified schema features"
 )]
 pub enum SessionMessage {
     /// A request or notification the agent sent for this session, such as a

@@ -194,9 +194,14 @@ const PROXY_SUCCESSOR: &str = v1::PROXY_METHOD_NAMES.proxy_successor;
 /// New variants are added as the SDK supports more protocol versions.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
-// Built once per conductor connection; boxing a variant would only make it
-// harder to match on.
-#[allow(clippy::large_enum_variant)]
+// TODO(next major): revisit boxing the public initialization payloads, built once per connection.
+#[cfg_attr(
+    feature = "unstable_protocol_v2",
+    allow(
+        clippy::large_enum_variant,
+        reason = "the size difference depends on the enabled schema capabilities"
+    )
+)]
 pub enum SelectedInitializeRequest {
     /// The conductor selected ACP protocol v1.
     V1(v1::InitializeRequest),
@@ -1608,12 +1613,15 @@ fn select_like_an_agent(requested: ProtocolVersion) -> ProtocolVersion {
 pub(crate) use sealed::{HostRole, Token};
 
 mod sealed {
-    use super::*;
+    use super::{
+        Client, ConductorMessage, ConductorRunner, ConnectionTo, Dispatch, Error, Handled, HasPeer,
+        ProtocolVersion, Role, SelectedInitializeRequest, mpsc,
+    };
 
     /// A value only this crate can create.
     ///
     /// Every [`HostRole`] method takes one, so code outside this crate cannot
-    /// call those methods through a [`ConductorHostRole`] bound.
+    /// call those methods through a [`ConductorHostRole`](super::ConductorHostRole) bound.
     #[derive(Debug, Clone, Copy)]
     pub struct Token(());
 

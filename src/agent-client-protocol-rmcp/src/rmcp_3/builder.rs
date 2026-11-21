@@ -453,8 +453,8 @@ impl<R: Role> ServerHandler for McpServerConnection<R> {
                     if has_structured_output {
                         Ok(CallToolResult::structured(result).into())
                     } else {
-                        let content = rmcp::model::ContentBlock::text(result.to_string());
-                        Ok(CallToolResult::success(vec![content]).into())
+                        let text = rmcp::model::ContentBlock::text(result.to_string());
+                        Ok(CallToolResult::success(vec![text]).into())
                     }
                 }
                 // Tool failures, including arguments that do not match the

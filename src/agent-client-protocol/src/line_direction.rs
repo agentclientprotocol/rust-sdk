@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+pub(crate) type DebugCallback = Arc<dyn Fn(&str, LineDirection) + Send + Sync>;
+
 /// Direction of a line being sent or received by a native transport.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineDirection {
