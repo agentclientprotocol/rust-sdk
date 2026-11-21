@@ -1,3 +1,5 @@
+//! Exercises v2 handshakes, version routing and fallback, and typed JSON-RPC dispatch.
+
 #![cfg(feature = "unstable_protocol_v2")]
 
 use agent_client_protocol::RawJsonRpcId;

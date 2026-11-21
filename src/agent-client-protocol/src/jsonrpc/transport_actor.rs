@@ -76,8 +76,8 @@ impl TransportFrame {
 /// Transport outgoing actor for line streams: serializes [`TransportFrame`] values and yields
 /// lines.
 ///
-/// This is a line-based variant of `transport_outgoing_actor` that works with a Sink<String>
-/// instead of an AsyncWrite byte stream. This enables interception of lines before they are
+/// This is a line-based variant of `transport_outgoing_actor` that works with a `Sink<String>`
+/// instead of an `AsyncWrite` byte stream. This enables interception of lines before they are
 /// written to the underlying transport.
 ///
 /// This actor handles transport mechanics:
@@ -255,7 +255,7 @@ pub(super) async fn transport_outgoing_lines_actor(
 /// Transport incoming actor for line streams: parses lines into [`TransportFrame`] values.
 ///
 /// This is a line-based variant of `transport_incoming_actor` that works with a
-/// Stream<Item = io::Result<String>> instead of an AsyncRead byte stream. This enables
+/// `Stream<Item = io::Result<String>>` instead of an `AsyncRead` byte stream. This enables
 /// interception of lines before they are parsed.
 ///
 /// This actor handles transport mechanics:

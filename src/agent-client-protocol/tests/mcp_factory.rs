@@ -1,3 +1,5 @@
+//! Exercises factory-backed MCP requests, including cancellation, error forwarding, and backend cleanup.
+
 #![cfg(feature = "unstable_mcp_over_acp")]
 
 use agent_client_protocol::{

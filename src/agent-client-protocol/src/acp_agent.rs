@@ -998,6 +998,11 @@ impl AcpAgent {
     /// Leading arguments of the form `NAME=value` are parsed as environment variables.
     /// The first non-env argument is the command, and the rest are arguments.
     ///
+    /// # Errors
+    ///
+    /// Returns an error if there are no arguments or all arguments are
+    /// environment assignments. This does not start or look up the executable.
+    ///
     /// # Example
     ///
     /// ```

@@ -1,4 +1,4 @@
-//! Tests for the JsonRpcRequest, JsonRpcNotification, and JsonRpcResponse derive macros.
+//! Tests for the `JsonRpcRequest`, `JsonRpcNotification`, and `JsonRpcResponse` derive macros.
 
 #![allow(non_upper_case_globals)]
 

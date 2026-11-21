@@ -1,3 +1,5 @@
+//! Exercises v2 session handles, including prompt acceptance, cancellation, replay, and permission requests.
+
 #![cfg(feature = "unstable_protocol_v2")]
 
 use std::{

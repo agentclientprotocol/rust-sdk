@@ -157,6 +157,12 @@ impl ClientProtocolConnector {
 
     /// Connect to an agent produced by `agent` using the highest configured
     /// compatible protocol implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns Invalid request (`-32600`) if no implementation is configured.
+    /// Propagates failures while exchanging initialization messages or driving
+    /// the selected client and agent connections.
     pub async fn connect_to<C>(
         mut self,
         mut agent: impl FnMut() -> C + Send + 'static,

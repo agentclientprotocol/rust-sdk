@@ -1,3 +1,5 @@
+//! Checks schema 1.12 support for system prompts and v2 tool-call metadata patches.
+
 use agent_client_protocol::{JsonRpcMessage, v1::schema as v1};
 use serde_json::json;
 

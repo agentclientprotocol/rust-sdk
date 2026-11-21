@@ -1,3 +1,5 @@
+//! Checks how native and factory-backed MCP servers report discovery results over ACP.
+
 #![cfg(feature = "unstable_mcp_over_acp")]
 
 use agent_client_protocol::{

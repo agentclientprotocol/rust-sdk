@@ -1,3 +1,5 @@
+//! Checks when MCP attachments start and stop while creating, forking, or resuming a v2 session.
+
 #![cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
 
 use std::{

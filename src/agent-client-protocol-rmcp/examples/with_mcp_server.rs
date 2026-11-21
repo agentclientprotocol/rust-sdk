@@ -39,6 +39,7 @@ pub struct ExampleMcpServer {
 }
 
 impl ExampleMcpServer {
+    /// Creates an MCP server with the `echo` tool registered.
     #[must_use]
     pub fn new() -> Self {
         Self {

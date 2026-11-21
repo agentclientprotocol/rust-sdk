@@ -1,3 +1,5 @@
+//! Checks that the connection waits for native MCP cleanup on EOF, foreground completion, and task failure.
+
 #![cfg(feature = "unstable_mcp_over_acp")]
 
 use agent_client_protocol::{

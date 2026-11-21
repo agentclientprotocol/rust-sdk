@@ -150,6 +150,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     }
 
     /// Spawn a task that runs for as long as the JSON-RPC connection is served.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection's task queue is closed.
     #[track_caller]
     pub fn spawn(
         &self,
@@ -163,6 +167,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// The returned connection context is selected by `builder`; spawning a
     /// [`v2::Builder`](crate::v2::Builder) therefore returns another
     /// [`v2::ConnectionTo`](ConnectionTo).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the parent connection cannot queue the child connection's task.
     ///
     /// ```no_run
     /// # use agent_client_protocol::{
@@ -195,6 +203,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     }
 
     /// Send a request or notification and forward its response appropriately.
+    ///
+    /// # Errors
+    ///
+    /// Returns the forwarding error from [`send_proxied_message_to`](crate::ConnectionTo::send_proxied_message_to).
     pub fn send_proxied_message<
         Req: JsonRpcRequest<Response: Send>,
         Notif: JsonRpcNotification,
@@ -211,6 +223,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
 
     /// Send a request or notification to a specific peer and forward its
     /// response appropriately.
+    ///
+    /// # Errors
+    ///
+    /// Returns the forwarding error from [`send_proxied_message_to`](crate::ConnectionTo::send_proxied_message_to).
     pub fn send_proxied_message_to<
         Peer: Role,
         Req: JsonRpcRequest<Response: Send>,
@@ -277,6 +293,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     }
 
     /// Send an outgoing notification to the default counterpart peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the notification cannot be encoded or queued.
     pub fn send_notification<N: JsonRpcNotification>(
         &self,
         notification: N,
@@ -288,6 +308,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     }
 
     /// Send an outgoing notification to a specific peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the notification cannot be encoded for the peer or queued.
     pub fn send_notification_to<Peer: Role, N: JsonRpcNotification>(
         &self,
         peer: Peer,
@@ -306,6 +330,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// [`id`](crate::SentRequest::id) of a request sent through this
     /// connection. The raw [`ConnectionTo::send_cancel_request`](crate::ConnectionTo::send_cancel_request)
     /// takes any [`RawJsonRpcId`](crate::RawJsonRpcId).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cancellation notification cannot be encoded or queued.
     pub fn send_cancel_request(
         &self,
         request_id: impl Into<crate::v2::schema::RequestId>,
@@ -322,6 +350,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// `proxy/successor`, as the raw
     /// [`ConnectionTo::send_cancel_request_to`](crate::ConnectionTo::send_cancel_request_to)
     /// describes. See [`send_cancel_request`](Self::send_cancel_request).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cancellation notification cannot be encoded or queued.
     pub fn send_cancel_request_to<Peer: Role>(
         &self,
         peer: Peer,
@@ -340,6 +372,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// [`ConnectionTo`](crate::ConnectionTo). Prefer typed handlers on
     /// [`v2::Builder`](crate::v2::Builder) when registration can happen before the
     /// connection starts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection no longer accepts handler registrations.
     ///
     /// ```no_run
     /// # use agent_client_protocol::{

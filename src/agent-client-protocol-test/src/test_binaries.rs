@@ -80,7 +80,7 @@ pub fn mcp_echo_server_binary() -> PathBuf {
     path
 }
 
-/// Returns the path to the arrow_proxy example, asserting it exists.
+/// Returns the path to the `arrow_proxy` example, asserting it exists.
 #[must_use]
 pub fn arrow_proxy_example() -> PathBuf {
     let path = debug_example("arrow_proxy");

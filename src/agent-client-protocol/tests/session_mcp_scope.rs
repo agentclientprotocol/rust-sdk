@@ -1,3 +1,5 @@
+//! Checks that session setup failures and cancellations clean up only the affected session's MCP runners.
+
 #![cfg(feature = "unstable_mcp_over_acp")]
 
 use agent_client_protocol::{

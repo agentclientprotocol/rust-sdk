@@ -1,3 +1,5 @@
+//! Exercises v1 initialization, including fallback from newer versions and requests made before initialization.
+
 use agent_client_protocol::RawJsonRpcId;
 use std::sync::{
     Arc,

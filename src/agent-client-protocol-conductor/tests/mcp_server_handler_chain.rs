@@ -1,4 +1,4 @@
-//! Test that MCP server doesn't break the handler chain for NewSessionRequest.
+//! Test that an MCP server doesn't break the handler chain for `NewSessionRequest`.
 //!
 //! This is a regression test for a bug where `McpServer::handle_dispatch` would
 //! forward `NewSessionRequest` directly to the agent instead of returning
@@ -49,7 +49,7 @@ async fn recv<T: agent_client_protocol::JsonRpcResponse + Send>(
         .map_err(|_| agent_client_protocol::Error::internal_error())?
 }
 
-/// Tracks whether the NewSessionRequest handler was invoked
+/// Tracks whether the `NewSessionRequest` handler was invoked.
 struct HandlerConfig {
     new_session_handler_called: AtomicBool,
 }
@@ -86,8 +86,8 @@ impl HandlerConfig {
     }
 }
 
-/// A proxy component that has BOTH an MCP server AND a NewSessionRequest handler.
-/// The bug was that when both were present, the NewSessionRequest handler was never called.
+/// A proxy with both an MCP server and a `NewSessionRequest` handler.
+/// When both were present, the request handler was never called.
 struct ProxyWithMcpAndHandler {
     config: Arc<HandlerConfig>,
 }
@@ -227,7 +227,7 @@ async fn run_test(
         .await
 }
 
-/// Regression test: NewSessionRequest handler should be invoked even when MCP server is present
+/// The `NewSessionRequest` handler should be invoked even when an MCP server is present.
 #[tokio::test]
 async fn test_new_session_handler_invoked_with_mcp_server()
 -> Result<(), agent_client_protocol::Error> {

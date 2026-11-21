@@ -28,7 +28,7 @@ async fn recv<T: JsonRpcResponse + Send>(
 }
 
 /// Helper to set up a client-server pair for testing.
-/// Returns (server_reader, server_writer, client_reader, client_writer) for manual setup.
+/// Returns `(server_reader, server_writer, client_reader, client_writer)` for manual setup.
 fn setup_test_streams() -> (
     impl AsyncRead,
     impl AsyncWrite,

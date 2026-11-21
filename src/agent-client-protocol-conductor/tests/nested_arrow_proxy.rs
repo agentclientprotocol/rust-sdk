@@ -6,11 +6,11 @@
 //! 3. The full proxy chain works end-to-end
 //!
 //! Chain structure:
-//! test-editor -> conductor -> arrow_proxy1 -> arrow_proxy2 -> test_agent
+//! `test-editor -> conductor -> arrow_proxy1 -> arrow_proxy2 -> test_agent`
 //!
 //! Expected behavior:
-//! - arrow_proxy2 adds first '>' to test_agent's response: ">Hello..."
-//! - arrow_proxy1 adds second '>' to that: ">>Hello..."
+//! - `arrow_proxy2` adds the first `>` to `test_agent`'s response: `>Hello...`
+//! - `arrow_proxy1` adds the second `>`: `>>Hello...`
 //!
 //! Run `just prep-tests` before running this test.
 

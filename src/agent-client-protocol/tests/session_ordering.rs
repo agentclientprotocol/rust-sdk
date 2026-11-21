@@ -1,3 +1,5 @@
+//! Checks when session routing takes effect relative to setup responses, replay, and later messages.
+
 use std::{path::Path, time::Duration};
 
 use agent_client_protocol::V1;

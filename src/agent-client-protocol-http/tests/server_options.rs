@@ -1,3 +1,5 @@
+//! Checks HTTP server option defaults and that changing one option preserves the others.
+
 #![cfg(feature = "server")]
 
 use agent_client_protocol_http::{CorsOptions, ServerOptions};

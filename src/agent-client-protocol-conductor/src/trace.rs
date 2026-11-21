@@ -139,6 +139,11 @@ pub struct NotificationEvent {
 /// Trait for destinations that can receive trace events.
 pub trait WriteEvent: Send + 'static {
     /// Write a trace event to the destination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the destination cannot accept the event, for
+    /// example if writing the trace file fails or the receiving channel is closed.
     fn write_event(&mut self, event: &TraceEvent) -> std::io::Result<()>;
 }
 
@@ -161,7 +166,7 @@ impl<W: Write + Send + 'static> WriteEvent for EventWriter<W> {
     }
 }
 
-/// Impl for UnboundedSender - sends events to a channel (useful for testing).
+/// Sends events to an unbounded channel (useful for testing).
 impl WriteEvent for futures::channel::mpsc::UnboundedSender<TraceEvent> {
     fn write_event(&mut self, event: &TraceEvent) -> std::io::Result<()> {
         self.unbounded_send(event.clone())
@@ -194,7 +199,7 @@ struct RequestDetails {
 }
 
 impl TraceWriter {
-    /// Create a new trace writer from any WriteEvent destination.
+    /// Create a new trace writer from any [`WriteEvent`] destination.
     pub fn new<D: WriteEvent>(dest: D) -> Self {
         Self {
             dest: Box::new(dest),
@@ -204,6 +209,10 @@ impl TraceWriter {
     }
 
     /// Create a new trace writer that writes to a file path.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error if `path` cannot be created or opened for truncation.
     pub fn from_path(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let file = OpenOptions::new()
             .create(true)
@@ -465,7 +474,7 @@ impl TraceHandle {
     }
 }
 
-/// Convert a JSON-RPC id to serde_json::Value.
+/// Convert a JSON-RPC id to `serde_json::Value`.
 fn id_to_json(id: &RawJsonRpcId) -> serde_json::Value {
     serde_json::to_value(id).expect("RawJsonRpcId serializes infallibly")
 }

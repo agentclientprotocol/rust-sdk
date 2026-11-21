@@ -164,6 +164,11 @@ impl<Counterpart: Role> McpRequestContext<Counterpart> {
     }
 
     /// Send an operation-scoped notification while this invocation is live.
+    ///
+    /// # Errors
+    ///
+    /// Returns Request cancelled (`-32800`) if the operation has finished
+    /// or was cancelled. Otherwise propagates any failure to send the notification.
     pub async fn send_notification(
         &self,
         method: impl Into<String>,

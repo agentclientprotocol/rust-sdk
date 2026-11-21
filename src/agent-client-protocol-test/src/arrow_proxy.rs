@@ -13,6 +13,10 @@ use agent_client_protocol::{Agent, Client, ConnectTo, Proxy};
 /// # Arguments
 ///
 /// * `transport` - Component to the predecessor (conductor or another proxy)
+///
+/// # Errors
+///
+/// Returns a transport or connection error from running the proxy.
 pub async fn run_arrow_proxy(
     transport: impl ConnectTo<Proxy> + 'static,
 ) -> Result<(), agent_client_protocol::Error> {

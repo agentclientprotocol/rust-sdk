@@ -32,99 +32,134 @@ impl<R: Role> ConnectTo<R> for MockTransport {
     }
 }
 
-// Mock request/response types
+/// Parameterless `myRequest` used in request-handler examples.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MyRequest {}
 
+/// Reply to [`MyRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MyResponse {
+    /// Status text chosen by the handler.
     pub status: String,
 }
 
+/// Asks the example handler to process some text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessRequest {
+    /// Input to the operation.
     pub data: String,
 }
 
+/// Reply to [`ProcessRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessResponse {
+    /// Text returned by the processing handler.
     pub result: String,
 }
 
+/// Notification that the processing handler has started work.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessStarted {}
 
+/// Requests an analysis that can finish after the handler replies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalyzeRequest {
+    /// Text to analyze.
     pub data: String,
 }
 
+/// Immediate reply to [`AnalyzeRequest`]; [`AnalysisComplete`] carries the result later.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisStarted {
+    /// Identifier assigned to the background job.
     pub job_id: u32,
 }
 
+/// Looks up an item by ID in the response-callback examples.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryRequest {
+    /// ID of the item to look up, not the JSON-RPC request ID.
     pub id: u64,
 }
 
+/// Reply to [`QueryRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResponse {
+    /// Data returned for the requested item.
     pub data: String,
 }
 
+/// Asks the example validation handler to check some text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidateRequest {
+    /// Input to validate.
     pub data: String,
 }
 
+/// Validation outcome returned by the handler for [`ValidateRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidateResponse {
+    /// Whether the input passed validation.
     pub is_valid: bool,
+    /// Explanation of a validation failure, when provided.
     pub error: Option<String>,
 }
 
+/// Parameterless operation used as the next request in a chain of handlers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecuteRequest {}
 
+/// Reply to [`ExecuteRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecuteResponse {
+    /// Output of the example operation.
     pub result: String,
 }
 
+/// A second request type for examples that send a request from inside a handler.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OtherRequest {}
 
+/// Reply to [`OtherRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OtherResponse {
+    /// Value passed back to the calling handler.
     pub value: String,
 }
 
+/// Wraps a request for an example proxy to forward.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyRequest {
+    /// Method and params of the request being forwarded.
     pub inner_request: UntypedMessage,
 }
 
-// Mock notification types
+/// Parameterless `sessionUpdate` notification for dispatch examples.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionUpdate {}
 
+/// Reports progress while a handler is working.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusUpdate {
+    /// Human-readable progress message.
     pub message: String,
 }
 
+/// Reports that a background processing task finished.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessComplete {
+    /// Output of the completed task.
     pub result: String,
 }
 
+/// Delivers the result of an analysis acknowledged by [`AnalysisStarted`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisComplete {
+    /// Output of the analysis.
     pub result: String,
 }
 
+/// Signals that the callback has finished handling a [`QueryResponse`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryComplete {}
 
@@ -249,7 +284,13 @@ pub fn mock_connection() -> Builder<
     Client.v1()
 }
 
+/// Supplies placeholder values in examples that are compiled but not run.
 pub trait Make {
+    /// Stands in for constructing a value of this type.
+    ///
+    /// # Panics
+    ///
+    /// Always panics if the example actually evaluates this call.
     fn make() -> Self;
 }
 

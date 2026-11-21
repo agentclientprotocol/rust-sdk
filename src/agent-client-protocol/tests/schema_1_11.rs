@@ -1,3 +1,5 @@
+//! Checks schema 1.11 support for notices, session setup lists, and v2 stop reasons.
+
 use agent_client_protocol::{ErrorCode, JsonRpcMessage, v1::schema as v1};
 use serde_json::json;
 

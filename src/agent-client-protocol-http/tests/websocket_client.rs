@@ -1,3 +1,5 @@
+//! Exercises WebSocket handshakes with custom DNS, TLS, proxies, redirects, and timeouts.
+
 #![cfg(feature = "client")]
 
 use std::{future::Future, sync::Arc, time::Duration};

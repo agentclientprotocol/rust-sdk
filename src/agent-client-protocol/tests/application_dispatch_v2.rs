@@ -1,3 +1,5 @@
+//! Checks that an application sees replayed updates, the resume response, and EOF in wire order.
+
 #![cfg(feature = "unstable_protocol_v2")]
 
 use std::{cell::RefCell, rc::Rc, time::Duration};

@@ -93,6 +93,7 @@ pub struct Testy {
 }
 
 impl Testy {
+    /// Creates a v1 test agent with no sessions or authenticated methods.
     #[must_use]
     pub fn new() -> Self {
         Self {

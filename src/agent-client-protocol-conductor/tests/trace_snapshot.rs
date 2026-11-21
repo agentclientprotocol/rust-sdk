@@ -1,7 +1,7 @@
 //! Snapshot test for trace events from a real yopo interaction.
 //!
-//! This test runs yopo -> conductor (with arrow_proxy -> test_agent) and
-//! captures trace events to a channel for expect_test snapshot verification.
+//! This test runs yopo -> conductor (with `arrow_proxy` -> `test_agent`) and
+//! captures trace events to a channel for `expect_test` snapshot verification.
 //!
 //! Run `just prep-tests` before running this test.
 

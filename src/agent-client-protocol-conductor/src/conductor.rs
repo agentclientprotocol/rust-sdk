@@ -465,12 +465,16 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
     ///
     /// Events will be written as newline-delimited JSON (`.jsons` format).
     /// Use `agent-client-protocol-trace-viewer` to view the trace as an interactive sequence diagram.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error if `path` cannot be created or opened for truncation.
     pub fn trace_to_path(mut self, path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
         self.trace_writer = Some(crate::trace::TraceWriter::from_path(path)?);
         Ok(self)
     }
 
-    /// Enable trace logging with an existing TraceWriter.
+    /// Enable trace logging with an existing [`TraceWriter`](crate::trace::TraceWriter).
     #[must_use]
     pub fn with_trace_writer(mut self, writer: crate::trace::TraceWriter) -> Self {
         self.trace_writer = Some(writer);
@@ -478,6 +482,12 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
     }
 
     /// Run the conductor with a transport.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a transport or connection-task failure from
+    /// [`Builder::connect_to`]. Errors answered on individual requests are
+    /// not themselves connection failures.
     pub async fn run(
         self,
         transport: impl ConnectTo<Host>,
@@ -1631,9 +1641,9 @@ mod sealed {
         }
     }
 
-    /// The conductor's behavior for each [`ConductorHostRole`].
+    /// The conductor's behavior for each [`ConductorHostRole`](super::ConductorHostRole).
     ///
-    /// Private to this crate, so [`ConductorHostRole`] cannot be implemented
+    /// Private to this crate, so [`ConductorHostRole`](super::ConductorHostRole) cannot be implemented
     /// outside it. Its methods take a [`Token`], so they cannot be called
     /// outside it either. `Instantiator` is not a stable extension point.
     pub trait HostRole: Role<Counterpart: HasPeer<Client>> {

@@ -31,7 +31,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 /// - Strips timestamps (set to 0.0)
 /// - Replaces UUIDs with sequential IDs (id:0, id:1, etc.)
 /// - Replaces session IDs with "session:0", etc.
-/// - Replaces loopback HTTP endpoints with "http:endpoint:0", etc.
+/// - Replaces loopback HTTP endpoints with `http:endpoint:0`, etc.
 /// - Replaces MCP server and logical request IDs with stable sequential IDs
 /// - Redacts runtime-generated HTTP Authorization headers
 /// - Replaces the crate version rmcp reports in MCP `clientInfo`/`serverInfo`

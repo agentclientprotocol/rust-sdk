@@ -7,13 +7,15 @@
 //! 4. The '>' prefix is applied multiple times (once per proxy)
 //!
 //! Chain structure:
+//! ```text
 //! test-editor -> outer_conductor -> inner_conductor -> eliza
 //!                                    ├─ arrow_proxy1
 //!                                    └─ arrow_proxy2
+//! ```
 //!
 //! Expected behavior:
-//! - arrow_proxy1 adds first '>' to eliza's response: ">Hello..."
-//! - arrow_proxy2 adds second '>' to that: ">>Hello..."
+//! - `arrow_proxy1` adds the first `>` to eliza's response: `>Hello...`
+//! - `arrow_proxy2` adds the second `>`: `>>Hello...`
 //! - Inner conductor operates in proxy mode, forwarding to eliza
 //! - Outer conductor receives the ">>" prefixed response
 //!

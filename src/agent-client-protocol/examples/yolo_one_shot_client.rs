@@ -27,7 +27,7 @@ use std::str::FromStr;
 #[command(name = "yolo-one-shot-client")]
 #[command(about = "A simple ACP client for one-shot prompts", long_about = None)]
 struct Cli {
-    /// The command to run the agent (e.g., "python my_agent.py")
+    /// The command to run the agent (e.g., "python agent.py")
     #[arg(short, long)]
     command: String,
 
