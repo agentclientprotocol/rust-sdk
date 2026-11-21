@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.5.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-trace-viewer-v5.4.0...agent-client-protocol-trace-viewer-v5.5.0) - 2026-11-21
+
+### Fixed
+
+- *(trace-viewer)* display trace labels as plain text ([#514](https://github.com/agentclientprotocol/rust-sdk/pull/514))
+
+### Other
+
+- *(acp)* audit Clippy exceptions and enforce API documentation ([#517](https://github.com/agentclientprotocol/rust-sdk/pull/517))
+
 ## [5.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-trace-viewer-v5.0.0...agent-client-protocol-trace-viewer-v5.1.0) - 2026-11-09
 
 ### Other

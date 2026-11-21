@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.5.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v5.4.0...agent-client-protocol-rmcp-v5.5.0) - 2026-11-21
+
+### Other
+
+- *(acp)* audit Clippy exceptions and enforce API documentation ([#517](https://github.com/agentclientprotocol/rust-sdk/pull/517))
+
 ## [5.3.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v5.2.0...agent-client-protocol-rmcp-v5.3.0) - 2026-11-14
 
 ### Other

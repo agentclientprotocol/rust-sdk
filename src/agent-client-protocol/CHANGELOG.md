@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [5.5.0](https://github.com/agentclientprotocol/rust-sdk/compare/v5.4.0...v5.5.0) - 2026-11-21
+
+### Added
+
+- *(acp)* adopt schema 1.21.0 and re-export IndexMap ([#516](https://github.com/agentclientprotocol/rust-sdk/pull/516))
+- *(acp)* adopt schema 1.20.0 with stable plan operations and subagent sessions ([#513](https://github.com/agentclientprotocol/rust-sdk/pull/513))
+
+### Fixed
+
+- *(acp)* adopt schema 1.21.1 for boxed v2 payloads ([#518](https://github.com/agentclientprotocol/rust-sdk/pull/518))
+- *(conductor)* preserve request-scoped elicitation IDs ([#512](https://github.com/agentclientprotocol/rust-sdk/pull/512))
+- *(acp)* stop the v2 examples from cancelling a child session ([#510](https://github.com/agentclientprotocol/rust-sdk/pull/510))
+- *(acp)* align v2 cancellation and session setup with the protocol ([#509](https://github.com/agentclientprotocol/rust-sdk/pull/509))
+
+### Other
+
+- *(acp)* audit Clippy exceptions and enforce API documentation ([#517](https://github.com/agentclientprotocol/rust-sdk/pull/517))
+- *(acp)* drop the lint allows from the schema 1.17 and 1.20 tests ([#515](https://github.com/agentclientprotocol/rust-sdk/pull/515))
+
 ## [5.4.0](https://github.com/agentclientprotocol/rust-sdk/compare/v5.3.0...v5.4.0) - 2026-11-18
 
 ### Added

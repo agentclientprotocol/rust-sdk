@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.5.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v5.4.0...agent-client-protocol-conductor-v5.5.0) - 2026-11-21
+
+### Added
+
+- *(acp)* adopt schema 1.20.0 with stable plan operations and subagent sessions ([#513](https://github.com/agentclientprotocol/rust-sdk/pull/513))
+
+### Fixed
+
+- *(conductor)* preserve request-scoped elicitation IDs ([#512](https://github.com/agentclientprotocol/rust-sdk/pull/512))
+
+### Other
+
+- *(acp)* audit Clippy exceptions and enforce API documentation ([#517](https://github.com/agentclientprotocol/rust-sdk/pull/517))
+
 ## [5.4.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v5.3.0...agent-client-protocol-conductor-v5.4.0) - 2026-11-18
 
 ### Other
