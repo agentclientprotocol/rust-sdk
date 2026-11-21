@@ -1,9 +1,9 @@
 //! Schema 1.17 additions parse into the SDK's typed v1 and v2 messages.
 
-#![allow(unused_imports, dead_code)]
-
+use agent_client_protocol::JsonRpcMessage;
+#[cfg(any(feature = "unstable_auth_status", feature = "unstable_session_options"))]
+use agent_client_protocol::JsonRpcResponse;
 use agent_client_protocol::v1::schema as v1;
-use agent_client_protocol::{JsonRpcMessage, JsonRpcResponse};
 use serde_json::{Value, json};
 
 /// Parse `params` as `method` into `E`, check the parsed method, and check
@@ -19,6 +19,7 @@ fn assert_message_round_trips<E: JsonRpcMessage>(method: &str, params: &Value) {
 
 /// Parse `result` as the response to `method` into `R` and check that it
 /// serializes back to the same JSON.
+#[cfg(any(feature = "unstable_auth_status", feature = "unstable_session_options"))]
 fn assert_response_round_trips<R: JsonRpcResponse>(method: &str, result: &Value) {
     let parsed = R::from_json(method, result.clone())
         .unwrap_or_else(|error| panic!("{method} response should parse: {error:?}"));
@@ -30,6 +31,7 @@ fn assert_response_round_trips<R: JsonRpcResponse>(method: &str, result: &Value)
 }
 
 /// Parsing `params` as `method` into `E` fails with `-32602`.
+#[cfg(feature = "unstable_session_options")]
 fn assert_invalid_params<E: JsonRpcMessage>(method: &str, params: &Value) {
     let error = E::parse_message(method, params)
         .err()
@@ -110,13 +112,17 @@ fn v1_auth_account_description_round_trips() {
     );
 }
 
-#[cfg(feature = "unstable_protocol_v2")]
+#[cfg(all(
+    feature = "unstable_protocol_v2",
+    any(feature = "unstable_auth_status", feature = "unstable_session_options")
+))]
 mod v2_methods {
-    use agent_client_protocol::JsonRpcMessage;
     use agent_client_protocol::v2::schema as v2;
     use serde_json::json;
 
-    use super::{assert_invalid_params, assert_message_round_trips, assert_response_round_trips};
+    use super::assert_response_round_trips;
+    #[cfg(feature = "unstable_session_options")]
+    use super::{assert_invalid_params, assert_message_round_trips};
 
     #[cfg(feature = "unstable_session_options")]
     #[test]
