@@ -1,6 +1,6 @@
 #![cfg(feature = "unstable_llm_providers")]
 
-use indexmap::IndexMap;
+use agent_client_protocol::schema::IndexMap;
 
 use agent_client_protocol::{
     Agent, Client, Error, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse,

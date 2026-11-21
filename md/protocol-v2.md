@@ -680,7 +680,7 @@ The reuse probe is conservative: if parsing and serializing the raw v2 request
 would change any parameter, reuse is disabled and fallback opens a fresh
 connection. That does not turn an otherwise valid v2 request into an error.
 
-## Schema changes in schema 1.5 through 1.20
+## Schema changes in schema 1.5 through 1.21
 
 The `unstable_protocol_v2` API follows the v2 schema as it changes. Schema 1.5 added
 semantic newtypes for paths, media types, IDs, and cursors, renamed
@@ -1324,10 +1324,10 @@ Type changes:
   `SetProviderRequest::headers` (with `unstable_llm_providers`) was a
   `HashMap` and is an `IndexMap` in both versions. In v1, the `fields` of
   `OtherStateUpdate`, `OtherStopReason`, and `OtherCursorAnchor` are
-  `IndexMap`s too. The other v1 maps are unchanged. Add `indexmap = "2"` to
-  your dependencies to name the type. Where a function takes the map
-  directly, such as `OtherMcpServer::new`, an array of pairs with `.into()`
-  also works. `apply_meta_update` keeps the order of the remaining keys when
+  `IndexMap`s too. The other v1 maps are unchanged. Name the type as
+  `agent_client_protocol::schema::IndexMap`, which the SDK re-exports since
+  [schema 1.21](#schema-121). Where a function takes the map directly, such
+  as `OtherMcpServer::new`, an array of pairs with `.into()` also works. `apply_meta_update` keeps the order of the remaining keys when
   it removes one.
 - `CompactionUpdate::status` is a `MaybeUndefined<CompactionStatus>` patch
   field: omitted leaves the status unchanged, `null` resets it to
@@ -1437,3 +1437,25 @@ Client projections should also follow these rules:
 - After the agent selects a lower protocol version, you may send that
   version, or a lower one you support, when you repeat `initialize` or open a
   new connection. `Client.protocol_connector()` does this when it falls back.
+
+### Schema 1.21
+
+Schema 1.21 changes no message. It only affects how you name a type:
+
+- `agent_client_protocol::schema::IndexMap` is the map type of the schema's
+  ordered maps: the `fields` of every `Other*` variant,
+  `ElicitationSchema::properties`, `ElicitationAcceptAction::content`, and
+  `SetProviderRequest::headers`. The schema crate re-exports it from
+  `indexmap`, and the SDK passes it on. If you added `indexmap` to your
+  dependencies for schema 1.20 only to name this type, you can remove it.
+
+  ```rust
+  use agent_client_protocol::schema::IndexMap;
+  use agent_client_protocol::v1::schema::{OtherStateUpdate, StateUpdate};
+  use serde_json::json;
+
+  let fields = IndexMap::from([("reason".to_string(), json!("rate_limited"))]);
+  let state = StateUpdate::Other(OtherStateUpdate::new("_paused", fields));
+  ```
+
+There are no new rules for agents or clients.

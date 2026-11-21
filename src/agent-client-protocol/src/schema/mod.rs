@@ -207,7 +207,7 @@ mod proxy_protocol;
 mod v2_impls;
 
 pub use agent_client_protocol_schema::{
-    IntoMaybeUndefined, IntoOption, MaybeUndefined, MethodDispatchError, ProtocolVersion,
+    IndexMap, IntoMaybeUndefined, IntoOption, MaybeUndefined, MethodDispatchError, ProtocolVersion,
 };
 
 pub use proxy_protocol::SuccessorMessage;

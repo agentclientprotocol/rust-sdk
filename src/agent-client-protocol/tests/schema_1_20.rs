@@ -155,9 +155,8 @@ mod v2_changes {
     use std::num::NonZeroU16;
 
     use agent_client_protocol::JsonRpcMessage;
-    use agent_client_protocol::schema::MaybeUndefined;
+    use agent_client_protocol::schema::{IndexMap, MaybeUndefined};
     use agent_client_protocol::v2::schema as v2;
-    use indexmap::IndexMap;
     use serde_json::{Value, json};
 
     use super::{assert_message_round_trips, session_update};
