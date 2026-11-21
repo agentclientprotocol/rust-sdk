@@ -2978,8 +2978,7 @@ async fn send_initialize_reports_v1_selection_as_outcome() -> Result<(), Error> 
     assert_eq!(mismatch.selected(), ProtocolVersion::V1);
     assert!(matches!(
         mismatch.response,
-        SelectedInitializeResponse::V1(v1::InitializeResponse { protocol_version, .. })
-            if protocol_version == ProtocolVersion::V1
+        SelectedInitializeResponse::V1(response) if response.protocol_version == ProtocolVersion::V1
     ));
     Ok(())
 }

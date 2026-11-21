@@ -488,9 +488,11 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
   `v2::InitializeOutcome::LowerVersion` with the agent's validated response for
   the selected version, an `InitializationVersionMismatch` whose `response` is a
   `SelectedInitializeResponse::V1`. Both types are at the crate root because
-  they are not tied to one protocol version. After a lower
-  selection the connection stays uninitialized, and the caller can explicitly
-  fall back to a v1 client implementation if that is acceptable. Errors
+  they are not tied to one protocol version. The `Initialized` and `V1` variants
+  each hold a boxed `InitializeResponse` from the selected schema. Read its
+  fields directly, or use `*response` to take the owned response out of the box.
+  After a lower selection the connection stays uninitialized, and the caller can
+  explicitly fall back to a v1 client implementation if that is acceptable. Errors
   returned by the agent, including `-32022`, malformed responses, and transport
   failures still resolve with errors. A plain `send_request` of the initialize
   request instead resolves a v1 selection with a local error.
