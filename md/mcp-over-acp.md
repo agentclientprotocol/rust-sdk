@@ -15,6 +15,8 @@ initialization handshake, or discovery prerequisite.
 `McpRequest` and a request-scoped `McpRequestContext`. The context exposes:
 
 - The declared server ID and logical request ID.
+- The session and tool call that the agent says the request was sent for,
+  when it supplies them.
 - Validated MCP metadata, including version and client capabilities.
 - Caller cancellation and operation cancellation caused by removal or shutdown.
 - An operation-scoped notification sender.
@@ -22,6 +24,21 @@ initialization handshake, or discovery prerequisite.
 
 Share caches, tool catalogs, and database pools deliberately. Do not infer a
 request's identity or capabilities from a previous call.
+
+`session_id()` and `tool_call_id()` return the request's `sessionId` and
+`toolCallId`. `McpConnectionTo` has the same accessors, so a `tool_fn` closure
+can read them from its connection. Both are `None` when the agent sent none,
+for example for a request it sends during session setup. A child session's
+work carries the child's ID.
+
+The SDK does not check these values. Before a tool uses the session to choose
+what it acts on, check that the session is active on the connection, or is a
+child the agent announced for an active session, and that this server was
+declared to it or to one of its ancestors. Do not reject or delay a request
+because you have not seen its tool call. The agent can report the call
+afterwards. A service cannot yet reject a request with `-32602`: an error it
+returns is reported as a backend failure (`-33002`). See the
+[RFD](https://agentclientprotocol.com/rfds/mcp-over-acp#session-and-tool-call-attribution).
 
 Use `McpServer::new_service` for native-only execution, or
 `new_service_with_standalone` to also serve a separate standalone transport.
@@ -49,6 +66,13 @@ logical ID for every operation and include these inner parameters:
 
 The logical ID stays unchanged through proxies and becomes the inner MCP
 JSON-RPC ID. It is separate from the outer ACP ID, which can change on each hop.
+
+When the request is for a session's work, name the session with
+`.session_id(...)`, and add `.tool_call_id(...)` for the tool call you report in
+`session/update`. Use the IDs you send on `session/update` for that work, so a
+child session's request carries the child's ID. Omit a value you do not know,
+and do not send a tool call without its session. A provider can reject a
+request that has no session.
 
 Register a `MessageMcpNotification` handler before starting an operation that
 streams notifications. Route notifications by server and logical request ID.

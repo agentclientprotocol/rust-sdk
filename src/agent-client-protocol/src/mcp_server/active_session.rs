@@ -14,7 +14,7 @@ use crate::{
     util::MatchDispatchFrom,
     v1::schema::{
         McpError, McpRequestId, McpServerAcpId, MessageMcpNotification, MessageMcpRequest,
-        MessageMcpResponse,
+        MessageMcpResponse, SessionId, ToolCallId,
     },
 };
 use futures::{
@@ -92,6 +92,8 @@ pub(super) trait McpProtocol: Send + 'static {
     fn response(outcome: McpOutcome) -> Self::MessageResponse;
     fn server_id(request: &Self::MessageRequest) -> McpServerAcpId;
     fn request_id(request: &Self::MessageRequest) -> McpRequestId;
+    /// The `sessionId` and `toolCallId` of the request, as the Agent sent them.
+    fn attribution(request: &Self::MessageRequest) -> (Option<SessionId>, Option<ToolCallId>);
     fn into_request(request: Self::MessageRequest) -> (String, Option<Map<String, Value>>);
     fn notification(
         server_id: McpServerAcpId,
@@ -116,6 +118,9 @@ impl McpProtocol for V1McpProtocol {
     }
     fn request_id(request: &Self::MessageRequest) -> McpRequestId {
         request.request_id.clone()
+    }
+    fn attribution(request: &Self::MessageRequest) -> (Option<SessionId>, Option<ToolCallId>) {
+        (request.session_id.clone(), request.tool_call_id.clone())
     }
     fn into_request(request: Self::MessageRequest) -> (String, Option<Map<String, Value>>) {
         (request.method, request.params)
@@ -151,6 +156,18 @@ impl McpProtocol for V2McpProtocol {
     }
     fn request_id(request: &Self::MessageRequest) -> McpRequestId {
         McpRequestId::new(request.request_id.0.clone())
+    }
+    fn attribution(request: &Self::MessageRequest) -> (Option<SessionId>, Option<ToolCallId>) {
+        (
+            request
+                .session_id
+                .as_ref()
+                .map(|id| SessionId::new(id.0.clone())),
+            request
+                .tool_call_id
+                .as_ref()
+                .map(|id| ToolCallId::new(id.0.clone())),
+        )
     }
     fn into_request(request: Self::MessageRequest) -> (String, Option<Map<String, Value>>) {
         (request.method, request.params)
@@ -311,6 +328,7 @@ where
             });
         }
         let request_id = Protocol::request_id(&request);
+        let (session_id, tool_call_id) = Protocol::attribution(&request);
         let (method, params) = Protocol::into_request(request);
         let is_discovery = method == "server/discover";
         if let Err(error) = validate_modern_request(&method, params.as_ref()) {
@@ -328,6 +346,8 @@ where
             context: McpConnectionContext::Acp {
                 server_id: server_id.clone(),
                 request_id: request_id.clone(),
+                session_id,
+                tool_call_id,
             },
             connection: connection.clone(),
             cleanup: Some(Arc::default()),
