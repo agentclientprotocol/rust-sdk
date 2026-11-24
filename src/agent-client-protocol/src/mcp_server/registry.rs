@@ -200,17 +200,19 @@ impl<Counterpart: Role> RegisteredMcpTool<Counterpart> {
 
     /// Decides whether a call of this tool over ACP is admitted.
     ///
-    /// Runs the tool's own [`McpTool::admit`], then the checks added for it
+    /// Awaits the tool's own [`McpTool::admit`], then the checks added for it
     /// with [`McpToolRegistry::add_tool_admission`] in the order they were
-    /// added.
+    /// added. The checks after a rejection do not run.
     ///
     /// # Errors
     ///
-    /// Returns the first [`McpRejection`].
+    /// The future returns the first [`McpRejection`].
     #[cfg(feature = "unstable_mcp_over_acp")]
-    pub fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection> {
-        self.tool.admit(request)?;
-        self.admission.admit(request)
+    pub fn admit(&self, request: McpAdmission) -> BoxFuture<'_, Result<(), McpRejection>> {
+        Box::pin(async move {
+            self.tool.admit(request.clone()).await?;
+            self.admission.admit(&request).await
+        })
     }
 }
 
@@ -295,6 +297,9 @@ impl<Counterpart: Role> McpToolRegistry<Counterpart> {
     /// Adds an admission check for one registered tool, for a tool that
     /// cannot state its rule in [`McpTool::admit`], such as a function tool.
     ///
+    /// The check is an async closure of the request. Pass
+    /// [`mcp_admission!`](crate::mcp_admission) as the last argument.
+    ///
     /// The check runs after the tool's own [`McpTool::admit`] and after the
     /// checks added for the tool before. Registering another tool under the
     /// same name removes it.
@@ -303,17 +308,24 @@ impl<Counterpart: Role> McpToolRegistry<Counterpart> {
     ///
     /// Returns [`UnknownToolError`] if no tool with this name is registered.
     #[cfg(feature = "unstable_mcp_over_acp")]
-    pub fn add_tool_admission(
+    pub fn add_tool_admission<F>(
         &mut self,
         name: &str,
-        admit: impl Fn(&McpAdmission<'_>) -> Result<(), McpRejection> + Send + Sync + 'static,
-    ) -> Result<(), UnknownToolError> {
+        admit: F,
+        to_future_hack: impl for<'a> Fn(&'a F, McpAdmission) -> BoxFuture<'a, Result<(), McpRejection>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<(), UnknownToolError>
+    where
+        F: AsyncFn(McpAdmission) -> Result<(), McpRejection> + Send + Sync + 'static,
+    {
         let tool = self
             .tool_indices
             .get(name)
             .and_then(|&index| self.tools.get_mut(index))
             .ok_or_else(|| UnknownToolError::new(name))?;
-        tool.admission.push(admit);
+        tool.admission.push(admit, to_future_hack);
         Ok(())
     }
 
@@ -326,12 +338,12 @@ impl<Counterpart: Role> McpToolRegistry<Counterpart> {
     ///
     /// # Errors
     ///
-    /// Returns the tool's [`McpRejection`].
+    /// The future returns the tool's [`McpRejection`].
     #[cfg(feature = "unstable_mcp_over_acp")]
-    pub fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection> {
+    pub fn admit(&self, request: McpAdmission) -> BoxFuture<'_, Result<(), McpRejection>> {
         match request.tool_name().and_then(|name| self.enabled_tool(name)) {
             Some(tool) => tool.admit(request),
-            None => Ok(()),
+            None => Box::pin(std::future::ready(Ok(()))),
         }
     }
 
@@ -397,7 +409,7 @@ trait ErasedMcpTool<Counterpart: Role>: Send + Sync {
     ) -> BoxFuture<'_, Result<Value, Error>>;
 
     #[cfg(feature = "unstable_mcp_over_acp")]
-    fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection>;
+    fn admit(&self, request: McpAdmission) -> BoxFuture<'_, Result<(), McpRejection>>;
 }
 
 fn make_erased_mcp_tool<R, M>(tool: M) -> Arc<dyn ErasedMcpTool<R>>
@@ -428,8 +440,8 @@ where
         }
 
         #[cfg(feature = "unstable_mcp_over_acp")]
-        fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection> {
-            self.tool.admit(request)
+        fn admit(&self, request: McpAdmission) -> BoxFuture<'_, Result<(), McpRejection>> {
+            Box::pin(self.tool.admit(request))
         }
     }
 
@@ -525,31 +537,22 @@ mod tests {
     #[cfg(feature = "unstable_mcp_over_acp")]
     #[test]
     fn registry_admits_by_the_rule_of_the_enabled_tool_a_call_names() {
-        use crate::v1::schema::{McpRequestId, McpServerAcpId};
-
         fn admit(
             registry: &McpToolRegistry<mcp::Client>,
             method: &str,
             tool: &str,
         ) -> Result<(), McpRejection> {
-            let server_id = McpServerAcpId::new("server");
-            let request_id = McpRequestId::new("request");
             let params = serde_json::json!({ "name": tool });
-            registry.admit(&McpAdmission::new(
-                &server_id,
-                &request_id,
-                method,
-                params.as_object(),
-                None,
-                None,
-            ))
+            let request = McpAdmission::new("server", "request", method)
+                .with_params(params.as_object().unwrap().clone());
+            futures::executor::block_on(registry.admit(request))
         }
 
         let mut registry = McpToolRegistry::default();
         registry.register_tool(Echo);
         assert_eq!(
             registry
-                .add_tool_admission("ech", |_request| Ok(()))
+                .add_tool_admission("ech", async |_request| Ok(()), crate::mcp_admission!())
                 .unwrap_err()
                 .name(),
             "ech"
@@ -557,10 +560,14 @@ mod tests {
         assert_eq!(admit(&registry, "tools/call", "echo"), Ok(()));
 
         registry
-            .add_tool_admission("echo", |request| {
-                request.require_session_id()?;
-                Ok(())
-            })
+            .add_tool_admission(
+                "echo",
+                async |request| {
+                    request.require_session_id()?;
+                    Ok(())
+                },
+                crate::mcp_admission!(),
+            )
             .unwrap();
         assert_eq!(
             admit(&registry, "tools/call", "echo"),

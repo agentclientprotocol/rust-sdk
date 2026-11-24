@@ -207,20 +207,24 @@ pub trait McpService<Counterpart: Role>: Send + Sync + 'static {
     /// Decides, before [`execute`](Self::execute) is called, whether a
     /// request is admitted. The default admits every request.
     ///
-    /// The SDK calls it after the checks the server was given with
+    /// The SDK awaits it after the checks the server was given with
     /// [`McpServer::with_admission`](super::McpServer::with_admission), and
     /// answers a rejection the same way: with the outer ACP error Invalid
     /// params (`-32602`), without calling `execute`. A service built from a
     /// tool registry uses it to apply the rule of the tool a `tools/call`
     /// request names.
     ///
+    /// The SDK drops the returned future when the request is cancelled, its
+    /// server registration is removed, or the connection shuts down. It must
+    /// not own work that needs cleanup.
+    ///
     /// # Errors
     ///
-    /// Returns the [`McpRejection`] that answers a request the service does
-    /// not admit.
-    fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection> {
-        let _ = request;
-        Ok(())
+    /// The future returns the [`McpRejection`] that answers a request the
+    /// service does not admit.
+    fn admit(&self, request: McpAdmission) -> BoxFuture<'static, Result<(), McpRejection>> {
+        drop(request);
+        Box::pin(std::future::ready(Ok(())))
     }
 
     /// Execute one invocation, including backend teardown.

@@ -352,10 +352,13 @@ impl ConnectTo<Conductor> for ProxyWithGatedMcp {
                 agent_client_protocol::tool_fn!(),
             )
             .build()
-            .with_admission(|request| {
-                request.require_session_id()?;
-                Ok(())
-            });
+            .with_admission(
+                async |request| {
+                    request.require_session_id()?;
+                    Ok(())
+                },
+                agent_client_protocol::mcp_admission!(),
+            );
 
         agent_client_protocol::Proxy
             .v1()

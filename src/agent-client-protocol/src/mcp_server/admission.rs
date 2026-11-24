@@ -2,6 +2,7 @@
 
 use std::{fmt, sync::Arc};
 
+use futures::future::BoxFuture;
 use serde_json::{Map, Value};
 
 use crate::v1::schema::{McpRequestId, McpServerAcpId, SessionId, ToolCallId};
@@ -11,69 +12,151 @@ use crate::v1::schema::{McpRequestId, McpServerAcpId, SessionId, ToolCallId};
 /// An admission check receives it and decides whether the request is
 /// admitted. Register a check for a server with
 /// [`McpServer::with_admission`](super::McpServer::with_admission).
-pub struct McpAdmission<'a> {
-    server_id: &'a McpServerAcpId,
-    request_id: &'a McpRequestId,
-    method: &'a str,
-    params: Option<&'a Map<String, Value>>,
-    session_id: Option<&'a SessionId>,
-    tool_call_id: Option<&'a ToolCallId>,
+///
+/// The SDK builds the value for each request. Build one yourself to test a
+/// check without a connection:
+///
+/// ```
+/// use agent_client_protocol::mcp_server::{McpAdmission, McpRejection};
+///
+/// async fn needs_session(request: McpAdmission) -> Result<(), McpRejection> {
+///     request.require_session_id()?;
+///     Ok(())
+/// }
+///
+/// # futures::executor::block_on(async {
+/// let request = McpAdmission::new("server-1", "request-1", "tools/call");
+/// assert_eq!(
+///     needs_session(request.clone()).await,
+///     Err(McpRejection::session_required())
+/// );
+/// assert_eq!(needs_session(request.with_session_id("sess_1")).await, Ok(()));
+/// # });
+/// ```
+#[derive(Clone)]
+pub struct McpAdmission {
+    // Shared, so that handing the request to each check copies no params.
+    parts: Arc<Parts>,
+}
+
+/// The parts of a request that a check reads.
+#[derive(Clone)]
+struct Parts {
+    server_id: McpServerAcpId,
+    request_id: McpRequestId,
+    method: String,
+    params: Option<Map<String, Value>>,
+    session_id: Option<SessionId>,
+    tool_call_id: Option<ToolCallId>,
 }
 
 // The inner params can hold tool arguments, so `Debug` leaves them out.
-impl fmt::Debug for McpAdmission<'_> {
+impl fmt::Debug for McpAdmission {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("McpAdmission")
-            .field("server_id", &self.server_id)
-            .field("request_id", &self.request_id)
-            .field("method", &self.method)
-            .field("session_id", &self.session_id)
-            .field("tool_call_id", &self.tool_call_id)
+            .field("server_id", &self.parts.server_id)
+            .field("request_id", &self.parts.request_id)
+            .field("method", &self.parts.method)
+            .field("session_id", &self.parts.session_id)
+            .field("tool_call_id", &self.parts.tool_call_id)
             .finish_non_exhaustive()
     }
 }
 
-impl<'a> McpAdmission<'a> {
-    pub(super) fn new(
-        server_id: &'a McpServerAcpId,
-        request_id: &'a McpRequestId,
-        method: &'a str,
-        params: Option<&'a Map<String, Value>>,
-        session_id: Option<&'a SessionId>,
-        tool_call_id: Option<&'a ToolCallId>,
+impl McpAdmission {
+    /// Builds a request to `method` of the server `server_id`, with no inner
+    /// params, no session, and no tool call.
+    #[must_use]
+    pub fn new(
+        server_id: impl Into<McpServerAcpId>,
+        request_id: impl Into<McpRequestId>,
+        method: impl Into<String>,
     ) -> Self {
         Self {
-            server_id,
-            request_id,
-            method,
-            params,
-            session_id,
-            tool_call_id,
+            parts: Arc::new(Parts {
+                server_id: server_id.into(),
+                request_id: request_id.into(),
+                method: method.into(),
+                params: None,
+                session_id: None,
+                tool_call_id: None,
+            }),
+        }
+    }
+
+    /// Sets the inner MCP params.
+    #[must_use]
+    pub fn with_params(mut self, params: Map<String, Value>) -> Self {
+        Arc::make_mut(&mut self.parts).params = Some(params);
+        self
+    }
+
+    /// Sets the session the request was sent for.
+    #[must_use]
+    pub fn with_session_id(mut self, session_id: impl Into<SessionId>) -> Self {
+        Arc::make_mut(&mut self.parts).session_id = Some(session_id.into());
+        self
+    }
+
+    /// Sets the tool call the request is part of.
+    #[must_use]
+    pub fn with_tool_call_id(mut self, tool_call_id: impl Into<ToolCallId>) -> Self {
+        Arc::make_mut(&mut self.parts).tool_call_id = Some(tool_call_id.into());
+        self
+    }
+
+    /// The request a server runs once it is admitted.
+    pub(super) fn from_request(
+        server_id: McpServerAcpId,
+        request_id: McpRequestId,
+        method: String,
+        params: Option<Map<String, Value>>,
+        session_id: Option<SessionId>,
+        tool_call_id: Option<ToolCallId>,
+    ) -> Self {
+        Self {
+            parts: Arc::new(Parts {
+                server_id,
+                request_id,
+                method,
+                params,
+                session_id,
+                tool_call_id,
+            }),
+        }
+    }
+
+    /// Gives the inner method and params back to the server that runs them.
+    /// Copies them only if a check kept the request.
+    pub(super) fn into_method_and_params(self) -> (String, Option<Map<String, Value>>) {
+        match Arc::try_unwrap(self.parts) {
+            Ok(parts) => (parts.method, parts.params),
+            Err(shared) => (shared.method.clone(), shared.params.clone()),
         }
     }
 
     /// The declared server the request is addressed to.
     #[must_use]
     pub fn server_id(&self) -> &McpServerAcpId {
-        self.server_id
+        &self.parts.server_id
     }
 
     /// The logical identifier of the request.
     #[must_use]
     pub fn request_id(&self) -> &McpRequestId {
-        self.request_id
+        &self.parts.request_id
     }
 
     /// The inner MCP method, such as `tools/call`.
     #[must_use]
     pub fn method(&self) -> &str {
-        self.method
+        &self.parts.method
     }
 
     /// The inner MCP params, including the request's `_meta`.
     #[must_use]
     pub fn params(&self) -> Option<&Map<String, Value>> {
-        self.params
+        self.parts.params.as_ref()
     }
 
     /// The name of the tool a `tools/call` request calls.
@@ -82,10 +165,10 @@ impl<'a> McpAdmission<'a> {
     /// whose params have no `name` string.
     #[must_use]
     pub fn tool_name(&self) -> Option<&str> {
-        if self.method != "tools/call" {
+        if self.method() != "tools/call" {
             return None;
         }
-        self.params?.get("name")?.as_str()
+        self.params()?.get("name")?.as_str()
     }
 
     /// The session the Agent says this request was sent for.
@@ -95,7 +178,7 @@ impl<'a> McpAdmission<'a> {
     /// value.
     #[must_use]
     pub fn session_id(&self) -> Option<&SessionId> {
-        self.session_id
+        self.parts.session_id.as_ref()
     }
 
     /// The tool call, in the session returned by `session_id`, that the Agent
@@ -106,7 +189,7 @@ impl<'a> McpAdmission<'a> {
     /// known yet.
     #[must_use]
     pub fn tool_call_id(&self) -> Option<&ToolCallId> {
-        self.tool_call_id
+        self.parts.tool_call_id.as_ref()
     }
 
     /// Returns the session the Agent says this request was sent for, for a
@@ -120,7 +203,7 @@ impl<'a> McpAdmission<'a> {
     /// Returns [`McpRejection::session_required`] when the Agent supplied no
     /// session.
     pub fn require_session_id(&self) -> Result<&SessionId, McpRejection> {
-        self.session_id.ok_or_else(McpRejection::session_required)
+        self.session_id().ok_or_else(McpRejection::session_required)
     }
 }
 
@@ -128,7 +211,7 @@ impl<'a> McpAdmission<'a> {
 ///
 /// An admission check returns it. The SDK then answers the request with the
 /// outer ACP error Invalid params (`-32602`), with this reason as the `data`
-/// string, and runs nothing for the request.
+/// string, and runs nothing else for the request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct McpRejection {
     reason: String,
@@ -173,23 +256,56 @@ impl fmt::Display for McpRejection {
 
 impl std::error::Error for McpRejection {}
 
-type Admit = dyn Fn(&McpAdmission<'_>) -> Result<(), McpRejection> + Send + Sync;
+/// One admission check, stored without the type of its closure.
+trait Check: Send + Sync {
+    fn admit(&self, request: McpAdmission) -> BoxFuture<'_, Result<(), McpRejection>>;
+}
+
+/// A check with the function that boxes its future. The future can borrow
+/// what the check captured.
+struct AsyncCheck<F, ToFut> {
+    admit: F,
+    to_future_hack: ToFut,
+}
+
+impl<F, ToFut> Check for AsyncCheck<F, ToFut>
+where
+    F: Send + Sync,
+    ToFut: for<'a> Fn(&'a F, McpAdmission) -> BoxFuture<'a, Result<(), McpRejection>> + Send + Sync,
+{
+    fn admit(&self, request: McpAdmission) -> BoxFuture<'_, Result<(), McpRejection>> {
+        (self.to_future_hack)(&self.admit, request)
+    }
+}
 
 /// Admission checks, in the order they were added.
 #[derive(Clone, Default)]
-pub(super) struct AdmissionChecks(Vec<Arc<Admit>>);
+pub(super) struct AdmissionChecks(Vec<Arc<dyn Check>>);
 
 impl AdmissionChecks {
-    pub(super) fn push(
+    pub(super) fn push<F>(
         &mut self,
-        admit: impl Fn(&McpAdmission<'_>) -> Result<(), McpRejection> + Send + Sync + 'static,
-    ) {
-        self.0.push(Arc::new(admit));
+        admit: F,
+        to_future_hack: impl for<'a> Fn(&'a F, McpAdmission) -> BoxFuture<'a, Result<(), McpRejection>>
+        + Send
+        + Sync
+        + 'static,
+    ) where
+        F: AsyncFn(McpAdmission) -> Result<(), McpRejection> + Send + Sync + 'static,
+    {
+        self.0.push(Arc::new(AsyncCheck {
+            admit,
+            to_future_hack,
+        }));
     }
 
-    /// Runs every check in order and returns the first rejection.
-    pub(super) fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection> {
-        self.0.iter().try_for_each(|admit| admit(request))
+    /// Runs the checks one after the other and returns the first rejection.
+    /// The checks after it do not run.
+    pub(super) async fn admit(&self, request: &McpAdmission) -> Result<(), McpRejection> {
+        for check in &self.0 {
+            check.admit(request.clone()).await?;
+        }
+        Ok(())
     }
 }
 

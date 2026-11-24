@@ -2,8 +2,8 @@
 
 use super::{
     MCP_BACKEND_FAILURE, MCP_SERVER_UNAVAILABLE, McpAdmission, McpConnectionContext,
-    McpConnectionTo, McpOperationCancellation, McpOutcome, McpRequest, McpRequestContext,
-    McpServerConnect, McpService, admission::AdmissionChecks,
+    McpConnectionTo, McpOperationCancellation, McpOutcome, McpRejection, McpRequest,
+    McpRequestContext, McpServerConnect, McpService, admission::AdmissionChecks,
 };
 use crate::{
     Agent, ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcNotification,
@@ -231,7 +231,7 @@ pub(super) struct McpActiveSession<Counterpart: Role, Protocol = V1McpProtocol> 
     server_id: McpServerAcpId,
     mcp_connect: Arc<dyn McpServerConnect<Counterpart>>,
     service: Option<Arc<dyn McpService<Counterpart>>>,
-    admission: AdmissionChecks,
+    admission: Arc<AdmissionChecks>,
     active: ActiveRequests,
     protocol: PhantomData<fn() -> Protocol>,
 }
@@ -280,7 +280,8 @@ fn admit_request(
 async fn stopped<R: Role>(
     cancellation: &RequestCancellation,
     connection: &ConnectionTo<R>,
-    removed: oneshot::Receiver<()>,
+    // By value, or by `&mut` for a phase that leaves the rest to a later one.
+    removed: impl Future<Output = Result<(), oneshot::Canceled>> + Unpin,
 ) -> crate::Error {
     let peer = cancellation.cancelled();
     let shutdown = connection.shutdown_requested();
@@ -306,7 +307,7 @@ where
             server_id,
             mcp_connect,
             service,
-            admission: AdmissionChecks::default(),
+            admission: Arc::default(),
             active: Arc::default(),
             protocol: PhantomData,
         }
@@ -314,7 +315,7 @@ where
 
     /// Sets the checks from `McpServer::with_admission`.
     pub(super) fn with_admission(mut self, admission: AdmissionChecks) -> Self {
-        self.admission = admission;
+        self.admission = Arc::new(admission);
         self
     }
 
@@ -343,28 +344,6 @@ where
             responder.respond(Protocol::response(McpOutcome::Error(into_mcp_error(error))))?;
             return Ok(Handled::Yes);
         }
-        // The server's checks, then the service's own rule, decide whether the
-        // request runs. A rejected request is never held as active, and no
-        // service, connector or tool is called for it.
-        let admission = McpAdmission::new(
-            &server_id,
-            &request_id,
-            &method,
-            params.as_ref(),
-            session_id.as_ref(),
-            tool_call_id.as_ref(),
-        );
-        let admitted = self
-            .admission
-            .admit(&admission)
-            .and_then(|()| match &self.service {
-                Some(service) => service.admit(&admission),
-                None => Ok(()),
-            });
-        if let Err(rejection) = admitted {
-            responder.respond_with_error(rejection.into_error())?;
-            return Ok(Handled::Yes);
-        }
         let (guard, removed) = match admit_request(&self.active, request_id.clone()) {
             Ok(admitted) => admitted,
             Err(error) => {
@@ -372,6 +351,15 @@ where
                 return Ok(Handled::Yes);
             }
         };
+        let admission = McpAdmission::from_request(
+            server_id.clone(),
+            request_id.clone(),
+            method,
+            params,
+            session_id.clone(),
+            tool_call_id.clone(),
+        );
+        let admission_checks = self.admission.clone();
         let cleanup_connection = McpConnectionTo {
             context: McpConnectionContext::Acp {
                 server_id: server_id.clone(),
@@ -390,7 +378,33 @@ where
         // One protected task atomically owns construction, driving, forwarding
         // and cleanup. Rejected admission cannot start half an operation.
         connection.spawn_protected(async move {
-            let result = if let Some(service) = service {
+            // Admission is the first phase of the operation: the server's
+            // checks in the order added, then the service's own rule. The
+            // request holds its ID while they run. Cancellation, provider
+            // removal and shutdown end this phase as they end a running
+            // operation. The checks' future is then dropped, because a check
+            // owns no work to clean up.
+            let mut removed = removed;
+            let admitted = {
+                let checks = async {
+                    admission_checks.admit(&admission).await?;
+                    match &service {
+                        Some(service) => service.admit(admission.clone()).await,
+                        None => Ok(()),
+                    }
+                };
+                let stop = stopped(&cancellation, &task_connection, &mut removed);
+                futures::pin_mut!(checks, stop);
+                match future::select(stop, checks).await {
+                    Either::Left((reason, _)) => Err(reason),
+                    Either::Right((admitted, _)) => admitted.map_err(McpRejection::into_error),
+                }
+            };
+            let (method, params) = admission.into_method_and_params();
+            let result = if let Err(error) = admitted {
+                // No service, connector or tool runs for this request.
+                Err(error)
+            } else if let Some(service) = service {
                 let operation_cancellation = McpOperationCancellation::new();
                 let alive = Arc::new(Mutex::new(true));
                 let notify = {
@@ -777,6 +791,91 @@ mod tests {
             let _sent = stop_tx.send(());
             task.await.unwrap().unwrap();
         }).await.expect("provider removal cleanup timed out");
+    }
+
+    /// Removing the provider ends a request whose admission check is still
+    /// pending: the check's future is dropped and nothing is connected.
+    #[tokio::test]
+    async fn removing_provider_ends_a_request_whose_admission_check_is_pending() {
+        struct NeverConnected;
+        impl McpServerConnect<Agent> for NeverConnected {
+            fn name(&self) -> String {
+                "pending-admission".into()
+            }
+            fn connect(
+                &self,
+                _: McpConnectionTo<Agent>,
+            ) -> crate::DynConnectTo<crate::role::mcp::Client> {
+                panic!("a request that was never admitted must not connect a backend")
+            }
+        }
+        struct Dropped(Arc<Mutex<bool>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                *self.0.lock().unwrap() = true;
+            }
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let (transport, mut peer) = crate::Channel::duplex();
+            let (waiting_tx, waiting_rx) = tokio::sync::oneshot::channel();
+            let waiting_tx = Mutex::new(Some(waiting_tx));
+            let dropped = Arc::new(Mutex::new(false));
+            let mut checks = AdmissionChecks::default();
+            checks.push(
+                {
+                    let dropped = dropped.clone();
+                    async move |_request| {
+                        let _dropped = Dropped(dropped.clone());
+                        let waiting = waiting_tx.lock().unwrap().take().unwrap();
+                        waiting.send(()).unwrap();
+                        future::pending::<Result<(), McpRejection>>().await
+                    }
+                },
+                crate::mcp_admission!(),
+            );
+            let (remove_tx, remove_rx) = tokio::sync::oneshot::channel();
+            let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+            let (installed_tx, installed_rx) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(crate::Client.v1().connect_with(transport, async move |cx| {
+                let handler = McpActiveSession::<Agent>::new_with_service(
+                    McpServerAcpId::new("provider"),
+                    Arc::new(NeverConnected),
+                    None,
+                )
+                .with_admission(checks);
+                let guard = cx.add_dynamic_handler(handler)?;
+                let _sent = installed_tx.send(());
+                remove_rx.await.unwrap();
+                drop(guard);
+                stop_rx.await.unwrap();
+                Ok(())
+            }));
+            installed_rx.await.unwrap();
+            let request = json!({"jsonrpc":"2.0","id":"outer","method":"mcp/message","params":{
+                "serverId":"provider","requestId":"logical","method":"tools/list","params":{"_meta":{
+                    "io.modelcontextprotocol/protocolVersion":MCP_VERSION,
+                    "io.modelcontextprotocol/clientCapabilities":{}
+                }}
+            }});
+            peer.tx
+                .unbounded_send(TransportFrame::Single(serde_json::from_value(request).unwrap()))
+                .unwrap();
+            waiting_rx.await.unwrap();
+            assert!(!*dropped.lock().unwrap());
+            let _sent = remove_tx.send(());
+            let TransportFrame::Single(response) = peer.rx.next().await.unwrap() else {
+                panic!("single frame")
+            };
+            assert_eq!(
+                serde_json::to_value(response).unwrap()["error"]["code"],
+                MCP_SERVER_UNAVAILABLE.value()
+            );
+            assert!(*dropped.lock().unwrap());
+            let _sent = stop_tx.send(());
+            task.await.unwrap().unwrap();
+        })
+        .await
+        .expect("provider removal during admission timed out");
     }
 
     #[test]

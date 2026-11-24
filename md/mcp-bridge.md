@@ -155,10 +155,13 @@ overflow cancels that request and reports a distinct resource error.
 
 The codes `-33000`, `-33001`, `-33002`, and `-32800` of an outer ACP failure
 pass through. Every other code becomes `-33002`. Both keep the ACP error's
-`message` and drop its `data`, with one exception. A provider answers `-32602`
-for the ACP envelope, such as a `sessionId` it needs or refuses. To the MCP
-client `-32602` would mean that its own params are invalid, so the code still
-becomes `-33002`, but a string `data` is kept as the reason:
+`message` and drop its `data`, with one exception.
+
+A provider answers `-32602` for the ACP envelope, such as a `sessionId` it
+needs or refuses. To the MCP client `-32602` would mean that its own params
+are invalid, and a model that reads "Invalid params" retries with other tool
+arguments. So the code still becomes `-33002`, and the message says that the
+server refused the request, and why:
 
 ```json
 {
@@ -166,11 +169,16 @@ becomes `-33002`, but a string `data` is kept as the reason:
   "id": 4,
   "error": {
     "code": -33002,
-    "message": "Invalid params",
-    "data": "this MCP server requires sessionId on mcp/message"
+    "message": "The MCP server refused this request before running it. Reason: this MCP server requires sessionId on mcp/message. Changing the tool arguments will not help."
   }
 }
 ```
+
+The reason is the provider error's `data` when that is a non-empty string.
+Otherwise it is the error's `message` without a leading `Invalid params: `. It
+is trimmed and loses one trailing period. When no reason is left, the message
+is `The MCP server refused this request before running it. Changing the tool
+arguments will not help.`
 
 Admission belongs to the HTTP response body until consumption or drop, including
 admitted validation-error responses. Notification buffering and request/terminal

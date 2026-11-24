@@ -58,6 +58,7 @@ mod builder;
 agent_client_protocol::__if_mcp_over_acp! {
     {
         mod native;
+        pub use agent_client_protocol::mcp_admission;
         use agent_client_protocol::mcp_server::{McpOutcome, McpRequest, McpRequestContext, McpService};
         use futures::future::BoxFuture;
         use std::sync::{Arc, OnceLock};
@@ -126,12 +127,15 @@ pub trait McpServerExt<Counterpart: Role>: sealed::Sealed {
     /// in that check, by `tool_name()`:
     ///
     /// ```ignore
-    /// let server = McpServer::from_rmcp("notes", Notes::new).with_admission(|request| {
-    ///     if request.tool_name() == Some("list_notes") {
-    ///         request.require_session_id()?;
-    ///     }
-    ///     Ok(())
-    /// });
+    /// let server = McpServer::from_rmcp("notes", Notes::new).with_admission(
+    ///     async |request| {
+    ///         if request.tool_name() == Some("list_notes") {
+    ///             request.require_session_id()?;
+    ///         }
+    ///         Ok(())
+    ///     },
+    ///     agent_client_protocol_rmcp::rmcp_3::mcp_admission!(),
+    /// );
     /// ```
     ///
     /// # See also

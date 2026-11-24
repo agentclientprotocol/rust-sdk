@@ -44,17 +44,35 @@ afterwards. See the
 
 A server that needs the session of a request, or that refuses a session after
 its own check, decides that before the request runs. Add an admission check
-to the server with `McpServer::with_admission`:
+to the server with `McpServer::with_admission`. The check is an async closure
+of the request. Like the SDK's other async callbacks, it is followed by a
+macro as the last argument, here `mcp_admission!()`. The check can capture the
+provider's state and `await`:
 
 ```rust,ignore
 let server = McpServer::new_service("notes", NotesService::new(), NullRun)
-    .with_admission(move |request| {
-        let session_id = request.require_session_id()?;
-        if !sessions.is_active(session_id) {
-            return Err(McpRejection::session_rejected("the session is not active"));
-        }
+    .with_admission(
+        async move |request| {
+            let session_id = request.require_session_id()?;
+            if !sessions.is_active(session_id).await {
+                return Err(McpRejection::session_rejected("the session is not active"));
+            }
+            Ok(())
+        },
+        agent_client_protocol::mcp_admission!(),
+    );
+```
+
+A check that needs no `await` is the same closure without one:
+
+```rust,ignore
+.with_admission(
+    async |request| {
+        request.require_session_id()?;
         Ok(())
-    });
+    },
+    agent_client_protocol::mcp_admission!(),
+)
 ```
 
 The check receives an `McpAdmission`: the server ID, the request ID, the inner
@@ -70,17 +88,25 @@ only reads the request. A request is rejected when the check returns an
   server, whether the server is attached to one session or to every session of
   a proxy.
 - It runs after the SDK has checked the inner request's own metadata, and
-  before anything else. A rejected request reaches no service, connector, or
-  tool, and its request ID is not held as active.
+  before the service, connector, or tool is called. A rejected request reaches
+  none of them.
 - The agent receives the outer ACP error Invalid params (`-32602`). Its `data`
   string is `this MCP server requires sessionId on mcp/message` for
   `McpRejection::session_required()`, and `sessionId rejected: {reason}` for
   `McpRejection::session_rejected(reason)`.
-- The check is synchronous and runs on the connection's dispatch path. It
-  decides from what the provider already holds in memory, such as its list of
-  active sessions, and must not block.
-- Calling `with_admission` again adds another check. The SDK runs them in the
-  order they were added and answers with the first rejection.
+- A request holds its request ID while its check is pending, so another
+  request with that ID is answered as a duplicate. The ID is free again once
+  the request is answered, also after a rejection.
+- Cancellation by the agent, removal of the server's registration, and
+  connection shutdown end a pending check as they end a running request: with
+  Request cancelled (`-32800`), with `-33001`, and without a response. The SDK
+  then drops the check's future, so a check must not own work that needs
+  cleanup.
+- Calling `with_admission` again adds another check. The SDK runs them one
+  after the other in the order they were added. The first rejection answers
+  the request, and the checks after it do not run.
+- The checks of several requests can be pending at the same time, so a check
+  cannot change the state it captures. Put state that changes behind a lock.
 
 Any `Err` from `McpService::execute` is still a backend failure (`-33002`), and
 any `Err` from a function tool is still a tool result with `isError: true`.
@@ -93,25 +119,41 @@ that sends no attribution. The
 Give the rule to the tools that need it instead:
 
 ```rust,ignore
-.with_admission(|request| {
-    if request.tool_name() == Some("add_note") {
-        request.require_session_id()?;
-    }
-    Ok(())
-})
+.with_admission(
+    async |request| {
+        if request.tool_name() == Some("add_note") {
+            request.require_session_id()?;
+        }
+        Ok(())
+    },
+    agent_client_protocol::mcp_admission!(),
+)
+```
+
+To test a check without a connection, build its request with
+`McpAdmission::new(server_id, request_id, method)`, and add the optional parts
+with `with_params`, `with_session_id`, and `with_tool_call_id`:
+
+```rust,ignore
+let request = McpAdmission::new("server-1", "request-1", "tools/call");
+assert_eq!(
+    needs_session(request.clone()).await,
+    Err(McpRejection::session_required())
+);
+assert_eq!(needs_session(request.with_session_id("sess_1")).await, Ok(()));
 ```
 
 #### Rules of one tool
 
 A tool that the SDK registers can state its rule next to its definition. The
-server evaluates it before a `tools/call` request that names the tool runs,
-after the server's own checks. An `McpTool` implements `admit`:
+server awaits it before a `tools/call` request that names the tool runs, after
+the server's own checks. An `McpTool` implements `admit`:
 
 ```rust,ignore
 impl<R: Role> McpTool<R> for AddNote {
     // ...
 
-    fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection> {
+    async fn admit(&self, request: McpAdmission) -> Result<(), McpRejection> {
         request.require_session_id()?;
         Ok(())
     }
@@ -119,15 +161,20 @@ impl<R: Role> McpTool<R> for AddNote {
 ```
 
 A `tool_fn` or `tool_fn_mut` tool has no `McpTool` impl of its own. Add its
-rule by name on the rmcp `McpServerBuilder`:
+rule by name on the rmcp `McpServerBuilder`. The `rmcp_3` module re-exports
+`mcp_admission!` next to `tool_fn!`:
 
 ```rust,ignore
 let server = McpServer::builder("notes")
     .tool_fn("add_note", "Adds a note", add_note, tool_fn!())
-    .tool_admission("add_note", |request| {
-        request.require_session_id()?;
-        Ok(())
-    })?
+    .tool_admission(
+        "add_note",
+        async |request| {
+            request.require_session_id()?;
+            Ok(())
+        },
+        mcp_admission!(),
+    )?
     .build();
 ```
 

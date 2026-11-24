@@ -14,6 +14,8 @@ use crate::{
 #[cfg(feature = "unstable_mcp_over_acp")]
 use super::{McpAdmission, McpRejection, McpService, admission::AdmissionChecks};
 #[cfg(feature = "unstable_mcp_over_acp")]
+use futures::future::BoxFuture;
+#[cfg(feature = "unstable_mcp_over_acp")]
 use uuid::Uuid;
 
 #[cfg(feature = "unstable_mcp_over_acp")]
@@ -225,43 +227,95 @@ impl<Counterpart: Role, Run> McpServer<Counterpart, Run> {
     /// whether the request is admitted.
     ///
     /// Use it for a server that needs the session of a request, or that
-    /// refuses a session after its own check:
+    /// refuses a session after its own check. The check is an async closure
+    /// of the request. Pass [`mcp_admission!`](crate::mcp_admission) as the
+    /// last argument:
     ///
-    /// ```rust,ignore
-    /// let server = server.with_admission(move |request| {
-    ///     let session_id = request.require_session_id()?;
-    ///     if !sessions.is_active(session_id) {
-    ///         return Err(McpRejection::session_rejected("the session is not active"));
-    ///     }
-    ///     Ok(())
-    /// });
+    /// ```
+    /// # use agent_client_protocol::{Agent, mcp_server::McpServer};
+    /// # fn example(server: McpServer<Agent>) -> McpServer<Agent> {
+    /// server.with_admission(
+    ///     async |request| {
+    ///         request.require_session_id()?;
+    ///         Ok(())
+    ///     },
+    ///     agent_client_protocol::mcp_admission!(),
+    /// )
+    /// # }
+    /// ```
+    ///
+    /// A check can capture the provider's state and `await`:
+    ///
+    /// ```
+    /// # use agent_client_protocol::{
+    /// #     Agent,
+    /// #     mcp_server::{McpRejection, McpServer},
+    /// #     v1::schema::SessionId,
+    /// # };
+    /// # struct Sessions;
+    /// # impl Sessions {
+    /// #     async fn is_active(&self, _session_id: &SessionId) -> bool {
+    /// #         true
+    /// #     }
+    /// # }
+    /// # fn example(server: McpServer<Agent>, sessions: Sessions) -> McpServer<Agent> {
+    /// server.with_admission(
+    ///     async move |request| {
+    ///         let session_id = request.require_session_id()?;
+    ///         if !sessions.is_active(session_id).await {
+    ///             return Err(McpRejection::session_rejected("the session is not active"));
+    ///         }
+    ///         Ok(())
+    ///     },
+    ///     agent_client_protocol::mcp_admission!(),
+    /// )
+    /// # }
     /// ```
     ///
     /// The check runs for every request to this server, such as `tools/call`,
     /// `tools/list`, and `server/discover`. It runs after the SDK has checked
-    /// the inner request's own metadata, and before anything else: a rejected
-    /// request reaches no service, connector, or tool, and its request ID is
-    /// not held as active. The SDK answers it with the outer ACP error Invalid
-    /// params (`-32602`), with the [`McpRejection`]'s reason as the `data`
-    /// string.
+    /// the inner request's own metadata, and before the service, connector,
+    /// or tool is called. A rejected request reaches none of them. The SDK
+    /// answers it with the outer ACP error Invalid params (`-32602`), with
+    /// the [`McpRejection`]'s reason as the `data` string.
     ///
-    /// The check is synchronous and runs on the connection's dispatch path,
-    /// so it has to decide from what the provider already holds in memory,
-    /// such as its list of active sessions. It must not block.
+    /// A request holds its request ID while its check is pending, so another
+    /// request with that ID is answered as a duplicate. The ID is free again
+    /// once the request is answered, also after a rejection. Cancellation by
+    /// the Agent, removal of the server's registration, and connection
+    /// shutdown end a pending check as they end a running request: with
+    /// Request cancelled (`-32800`), with `-33001`, and without a response.
+    /// The SDK then drops the check's future, so a check must not own work
+    /// that needs cleanup.
     ///
-    /// Calling this method again adds another check. The SDK runs them in the
-    /// order they were added and answers with the first rejection. A
-    /// service's own [`McpService::admit`] runs after all of them.
+    /// Calling this method again adds another check. The SDK runs them one
+    /// after the other in the order they were added. The first rejection
+    /// answers the request, and the checks after it do not run. A service's
+    /// own [`McpService::admit`] runs after all of them.
+    ///
+    /// The checks of several requests can be pending at the same time, so a
+    /// check cannot change the state it captures. Put state that changes
+    /// behind a lock.
     ///
     /// A standalone MCP connection has no `mcp/message` request, so the check
     /// does not run there. A tool that is also served standalone still has to
     /// handle a request without a session.
+    ///
+    /// To test a check without a connection, build its request with
+    /// [`McpAdmission::new`].
     #[must_use]
-    pub fn with_admission(
+    pub fn with_admission<F>(
         mut self,
-        admit: impl Fn(&McpAdmission<'_>) -> Result<(), McpRejection> + Send + Sync + 'static,
-    ) -> Self {
-        self.admission.push(admit);
+        admit: F,
+        to_future_hack: impl for<'a> Fn(&'a F, McpAdmission) -> BoxFuture<'a, Result<(), McpRejection>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self
+    where
+        F: AsyncFn(McpAdmission) -> Result<(), McpRejection> + Send + Sync + 'static,
+    {
+        self.admission.push(admit, to_future_hack);
         self
     }
 }

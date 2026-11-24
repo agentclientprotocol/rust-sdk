@@ -705,7 +705,7 @@ async fn direct_v1_calls_preserve_inner_errors_without_hidden_listing()
             assert_eq!(outer_error["error"]["code"], -33002);
             // A provider that needs the session rejects the request with
             // `-32602`. The MCP client's own params are fine, so it sees a
-            // binding failure that keeps the provider's reason.
+            // binding failure that says the server refused, and why.
             let rejected = post_json(
                 &url,
                 &bearer,
@@ -719,8 +719,10 @@ async fn direct_v1_calls_preserve_inner_errors_without_hidden_listing()
                 serde_json::json!({
                     "jsonrpc":"2.0","id":8,
                     "error":{
-                        "code":-33002,"message":"Invalid params",
-                        "data":"this MCP server requires sessionId on mcp/message"
+                        "code":-33002,
+                        "message":"The MCP server refused this request before running it. \
+                            Reason: this MCP server requires sessionId on mcp/message. \
+                            Changing the tool arguments will not help."
                     }
                 })
             );

@@ -309,6 +309,26 @@ macro_rules! tool_fn {
 }
 
 /// This macro is used for the value of the `to_future_hack` parameter of
+/// [`McpServer::with_admission`](crate::mcp_server::McpServer::with_admission)
+/// and of the tool registry's `add_tool_admission` method.
+///
+/// The `agent-client-protocol-rmcp` crate re-exports it for the
+/// `tool_admission` method of its MCP server builder.
+///
+/// It expands to `|admit, request| Box::pin(admit(request))`.
+///
+/// This is needed until [return-type notation](https://github.com/rust-lang/rust/issues/109417)
+/// is stabilized.
+#[cfg(feature = "unstable_mcp_over_acp")]
+#[cfg_attr(docsrs, doc(cfg(feature = "unstable_mcp_over_acp")))]
+#[macro_export]
+macro_rules! mcp_admission {
+    () => {
+        |admit, request| Box::pin(admit(request))
+    };
+}
+
+/// This macro is used for the value of the `to_future_hack` parameter of
 /// [`Builder::on_receive_request`] and [`Builder::on_receive_request_from`].
 ///
 /// It expands to `|f, req, responder, cx| Box::pin(f(req, responder, cx))`.

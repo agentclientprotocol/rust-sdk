@@ -127,7 +127,7 @@ async fn v1_boolean_config_value_with_a_string_gets_invalid_params() {
 mod mcp_attribution {
     use super::{TIMEOUT, receive, send};
     use agent_client_protocol::{
-        Agent, Channel, Client, DynConnectTo, Error, NullRun,
+        Agent, Channel, Client, DynConnectTo, Error, NullRun, mcp_admission,
         mcp_server::{
             McpAdmission, McpConnectionTo, McpOutcome, McpRejection, McpRequest, McpRequestContext,
             McpServer, McpServerConnect, McpService,
@@ -140,9 +140,9 @@ mod mcp_attribution {
     use serde_json::{Value, json};
     use std::sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
-    use tokio::sync::oneshot;
+    use tokio::sync::{Notify, oneshot};
 
     /// Counts the requests it runs, and answers `tools/call` with the session
     /// and tool call the request was sent for.
@@ -182,13 +182,15 @@ mod mcp_attribution {
     struct ChildSessionsOnly(Service);
 
     impl McpService<Agent> for ChildSessionsOnly {
-        fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection> {
-            match request.session_id() {
-                Some(session_id) if session_id.0.as_ref() == "child" => Ok(()),
-                _ => Err(McpRejection::session_rejected(
-                    "not a session of this service",
-                )),
-            }
+        fn admit(&self, request: McpAdmission) -> BoxFuture<'static, Result<(), McpRejection>> {
+            Box::pin(async move {
+                match request.session_id() {
+                    Some(session_id) if session_id.0.as_ref() == "child" => Ok(()),
+                    _ => Err(McpRejection::session_rejected(
+                        "not a session of this service",
+                    )),
+                }
+            })
         }
 
         fn execute(
@@ -225,10 +227,52 @@ mod mcp_attribution {
         McpServer::new_service("attribution", Service { runs: runs.clone() }, NullRun)
     }
 
-    /// The check of a server that needs the session of every request.
-    fn require_session(request: &McpAdmission<'_>) -> Result<(), McpRejection> {
+    /// The check of a server that needs the session of every request. It
+    /// needs no `await`.
+    async fn require_session(request: McpAdmission) -> Result<(), McpRejection> {
         request.require_session_id()?;
         Ok(())
+    }
+
+    /// The state of a check that waits, for a request without a session,
+    /// until the test releases it, and then rejects the request.
+    #[derive(Clone, Default)]
+    struct Gate {
+        /// Notified when a check starts to wait.
+        waiting: Arc<Notify>,
+        /// Notified by the test to let the waiting check decide.
+        release: Arc<Notify>,
+        /// Whether the future of a check that waited is gone.
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Gate {
+        async fn check(&self, request: McpAdmission) -> Result<(), McpRejection> {
+            struct Dropped<'a>(&'a AtomicBool);
+            impl Drop for Dropped<'_> {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::SeqCst);
+                }
+            }
+
+            if request.session_id().is_some() {
+                return Ok(());
+            }
+            let _dropped = Dropped(&self.dropped);
+            self.waiting.notify_one();
+            self.release.notified().await;
+            Err(McpRejection::session_required())
+        }
+    }
+
+    /// A server that counts its runs in `runs` and asks `gate` first. The
+    /// check owns its copy of the gate and borrows it for each request.
+    fn gated_server(runs: &Arc<AtomicUsize>, gate: &Gate) -> McpServer<Agent, NullRun> {
+        let gate = gate.clone();
+        counting_server(runs).with_admission(
+            async move |request| gate.check(request).await,
+            mcp_admission!(),
+        )
     }
 
     /// The inner params of a request: `extra` and the `_meta` every modern
@@ -244,8 +288,10 @@ mod mcp_attribution {
     /// One `mcp/message` request for the Agent side of a test to send.
     #[derive(Clone)]
     struct Call {
-        /// The logical `requestId`, also used as the outer request ID.
+        /// The ID of the outer `mcp/message` request.
         id: &'static str,
+        /// The logical `requestId`.
+        request_id: &'static str,
         /// The inner MCP method.
         method: &'static str,
         /// The inner MCP params.
@@ -258,6 +304,7 @@ mod mcp_attribution {
         fn new(method: &'static str, attribution: Value) -> Self {
             Self {
                 id: "call",
+                request_id: "call",
                 method,
                 params: inner(json!({})),
                 attribution,
@@ -265,21 +312,30 @@ mod mcp_attribution {
         }
     }
 
-    /// Plays the Agent on `peer`: answers the session setup request, sends
-    /// `calls` in order as `mcp/message` requests, and returns the declared
-    /// server ID and the responses.
-    async fn exchange(peer: &mut Channel, calls: &[Call]) -> (Value, Vec<Value>) {
-        let setup = receive(peer).await;
-        let server_id = setup["params"]["mcpServers"][0]["serverId"].clone();
-        send(
-            peer,
-            json!({"jsonrpc": "2.0", "id": setup["id"], "result": {"sessionId": "parent"}}),
-        );
-        let mut responses = Vec::new();
-        for call in calls {
+    /// The Agent side of a connection, once its session is set up.
+    struct AgentSide<'a> {
+        peer: &'a mut Channel,
+        /// The server ID the Client declared in the session setup request.
+        server_id: Value,
+    }
+
+    impl<'a> AgentSide<'a> {
+        /// Answers the session setup request.
+        async fn set_up(peer: &'a mut Channel) -> Self {
+            let setup = receive(peer).await;
+            let server_id = setup["params"]["mcpServers"][0]["serverId"].clone();
+            send(
+                peer,
+                json!({"jsonrpc": "2.0", "id": setup["id"], "result": {"sessionId": "parent"}}),
+            );
+            Self { peer, server_id }
+        }
+
+        /// Sends `call` as one `mcp/message` request.
+        fn send(&self, call: &Call) {
             let mut envelope = json!({
-                "serverId": server_id,
-                "requestId": call.id,
+                "serverId": self.server_id,
+                "requestId": call.request_id,
                 "method": call.method,
                 "params": call.params,
             });
@@ -288,17 +344,37 @@ mod mcp_attribution {
                 .unwrap()
                 .extend(call.attribution.as_object().unwrap().clone());
             send(
-                peer,
+                self.peer,
                 json!({"jsonrpc": "2.0", "id": call.id, "method": "mcp/message", "params": envelope}),
             );
-            let response = receive(peer).await;
-            assert_eq!(response["id"], call.id, "{response}");
-            responses.push(response);
         }
-        (server_id, responses)
+
+        /// Cancels the request with the outer ID `id`.
+        fn cancel(&self, id: &str) {
+            send(
+                self.peer,
+                json!({"jsonrpc": "2.0", "method": "$/cancel_request", "params": {"requestId": id}}),
+            );
+        }
+
+        /// The next response, which has to answer the request `id`.
+        async fn response(&mut self, id: &str) -> Value {
+            let response = receive(self.peer).await;
+            assert_eq!(response["id"], id, "{response}");
+            response
+        }
+
+        /// Sends `call` and returns its response.
+        async fn call(&mut self, call: &Call) -> Value {
+            self.send(call);
+            self.response(call.id).await
+        }
     }
 
-    async fn v1_calls(server: McpServer<Agent, NullRun>, calls: &[Call]) -> (Value, Vec<Value>) {
+    async fn v1_session<T>(
+        server: McpServer<Agent, NullRun>,
+        script: impl AsyncFnOnce(&mut AgentSide<'_>) -> T,
+    ) -> T {
         tokio::time::timeout(TIMEOUT, async {
             let (transport, mut peer) = Channel::duplex();
             let (stop_tx, stop_rx) = oneshot::channel();
@@ -312,17 +388,20 @@ mod mcp_attribution {
                     })
                     .await
             }));
-            let exchanged = exchange(&mut peer, calls).await;
+            let output = script(&mut AgentSide::set_up(&mut peer).await).await;
             stop_tx.send(()).unwrap();
             client.await.unwrap().unwrap();
-            exchanged
+            output
         })
         .await
-        .expect("the v1 MCP calls timed out")
+        .expect("the v1 MCP exchange timed out")
     }
 
     #[cfg(feature = "unstable_protocol_v2")]
-    async fn v2_calls(server: McpServer<Agent, NullRun>, calls: &[Call]) -> (Value, Vec<Value>) {
+    async fn v2_session<T>(
+        server: McpServer<Agent, NullRun>,
+        script: impl AsyncFnOnce(&mut AgentSide<'_>) -> T,
+    ) -> T {
         tokio::time::timeout(TIMEOUT, async {
             let (transport, mut peer) = Channel::duplex();
             let (stop_tx, stop_rx) = oneshot::channel();
@@ -359,13 +438,13 @@ mod mcp_attribution {
                         .capabilities(capabilities),
                 }),
             );
-            let exchanged = exchange(&mut peer, calls).await;
+            let output = script(&mut AgentSide::set_up(&mut peer).await).await;
             stop_tx.send(()).unwrap();
             client.await.unwrap().unwrap();
-            exchanged
+            output
         })
         .await
-        .expect("the v2 MCP calls timed out")
+        .expect("the v2 MCP exchange timed out")
     }
 
     /// The protocol versions this build can attach a server to.
@@ -382,6 +461,20 @@ mod mcp_attribution {
         Version::V2,
     ];
 
+    /// Attaches `server` to a session of `version` and runs `script` as the
+    /// Agent.
+    async fn session<T>(
+        version: Version,
+        server: McpServer<Agent, NullRun>,
+        script: impl AsyncFnOnce(&mut AgentSide<'_>) -> T,
+    ) -> T {
+        match version {
+            Version::V1 => v1_session(server, script).await,
+            #[cfg(feature = "unstable_protocol_v2")]
+            Version::V2 => v2_session(server, script).await,
+        }
+    }
+
     /// Attaches `server` to a session of `version`, sends `calls` in order,
     /// and returns the declared server ID and the responses.
     async fn run(
@@ -389,11 +482,14 @@ mod mcp_attribution {
         server: McpServer<Agent, NullRun>,
         calls: &[Call],
     ) -> (Value, Vec<Value>) {
-        match version {
-            Version::V1 => v1_calls(server, calls).await,
-            #[cfg(feature = "unstable_protocol_v2")]
-            Version::V2 => v2_calls(server, calls).await,
-        }
+        session(version, server, async |agent| {
+            let mut responses = Vec::new();
+            for call in calls {
+                responses.push(agent.call(call).await);
+            }
+            (agent.server_id.clone(), responses)
+        })
+        .await
     }
 
     /// What the service sees for each form of attribution the Agent can send.
@@ -457,7 +553,7 @@ mod mcp_attribution {
             let runs = Arc::new(AtomicUsize::new(0));
             let rejected = ["tools/call", "tools/list", "server/discover"]
                 .map(|method| Call::new(method, json!({})));
-            let server = counting_server(&runs).with_admission(require_session);
+            let server = counting_server(&runs).with_admission(require_session, mcp_admission!());
             let (_, responses) = run(version, server, &rejected).await;
             for response in &responses {
                 assert_rejected(response, SESSION_REQUIRED);
@@ -471,7 +567,7 @@ mod mcp_attribution {
                 Call::new("tools/list", child.clone()),
                 Call::new("server/discover", child.clone()),
             ];
-            let server = counting_server(&runs).with_admission(require_session);
+            let server = counting_server(&runs).with_admission(require_session, mcp_admission!());
             let (_, responses) = run(version, server, &calls).await;
             assert_rejected(&responses[0], SESSION_REQUIRED);
             assert_eq!(
@@ -499,28 +595,33 @@ mod mcp_attribution {
     async fn admission_check_reads_the_request_it_decides_on() {
         for &version in VERSIONS {
             let seen = Arc::new(Mutex::new(Vec::new()));
-            let server = server().with_admission({
-                let seen = seen.clone();
-                move |request| {
-                    seen.lock().unwrap().push(json!({
-                        "serverId": request.server_id(),
-                        "requestId": request.request_id(),
-                        "method": request.method(),
-                        "toolName": request.tool_name(),
-                        "params": request.params(),
-                        "sessionId": request.session_id(),
-                        "toolCallId": request.tool_call_id(),
-                    }));
-                    if request.tool_name() == Some("write")
-                        && request.require_session_id()?.0.as_ref() != "child"
-                    {
-                        return Err(McpRejection::session_rejected("the session is not active"));
+            let server = server().with_admission(
+                {
+                    let seen = seen.clone();
+                    async move |request| {
+                        seen.lock().unwrap().push(json!({
+                            "serverId": request.server_id(),
+                            "requestId": request.request_id(),
+                            "method": request.method(),
+                            "toolName": request.tool_name(),
+                            "params": request.params(),
+                            "sessionId": request.session_id(),
+                            "toolCallId": request.tool_call_id(),
+                        }));
+                        if request.tool_name() == Some("write")
+                            && request.require_session_id()?.0.as_ref() != "child"
+                        {
+                            return Err(McpRejection::session_rejected(
+                                "the session is not active",
+                            ));
+                        }
+                        Ok(())
                     }
-                    Ok(())
-                }
-            });
-            let write = |id, attribution| Call {
-                id,
+                },
+                mcp_admission!(),
+            );
+            let write = |request_id, attribution| Call {
+                request_id,
                 params: inner(json!({"name": "write"})),
                 ..Call::new("tools/call", attribution)
             };
@@ -533,7 +634,6 @@ mod mcp_attribution {
                 write("accepted", json!({"sessionId": "child"})),
                 // The rule is for one tool, so other requests need no session.
                 Call {
-                    id: "read",
                     params: inner(json!({"name": "read"})),
                     ..Call::new("tools/call", json!({}))
                 },
@@ -569,15 +669,66 @@ mod mcp_attribution {
         }
     }
 
+    /// A check can await before it decides, for example to read session
+    /// state that lives behind an async lock. It owns the state it captured
+    /// and borrows it for each request.
+    #[tokio::test]
+    async fn admission_check_can_await_before_it_decides() {
+        for &version in VERSIONS {
+            let runs = Arc::new(AtomicUsize::new(0));
+            let active_sessions = tokio::sync::Mutex::new(vec!["child".to_owned()]);
+            let server = counting_server(&runs).with_admission(
+                async move |request| {
+                    let session_id = request.require_session_id()?;
+                    tokio::task::yield_now().await;
+                    let active = active_sessions.lock().await;
+                    if active.iter().any(|id| id == session_id.0.as_ref()) {
+                        Ok(())
+                    } else {
+                        Err(McpRejection::session_rejected("the session is not active"))
+                    }
+                },
+                mcp_admission!(),
+            );
+            let calls = [
+                Call::new("tools/call", json!({})),
+                Call::new("tools/call", json!({"sessionId": "other"})),
+                Call::new("tools/call", json!({"sessionId": "child"})),
+            ];
+            let (_, responses) = run(version, server, &calls).await;
+            assert_rejected(&responses[0], SESSION_REQUIRED);
+            assert_rejected(
+                &responses[1],
+                "sessionId rejected: the session is not active",
+            );
+            assert_eq!(
+                responses[2]["result"]["result"]["sessionId"], "child",
+                "{version:?}"
+            );
+            assert_eq!(runs.load(Ordering::SeqCst), 1, "{version:?}");
+        }
+    }
+
     /// Each `with_admission` call adds a check. They run in the order they
-    /// were added, and the first rejection answers the request.
+    /// were added. The first rejection answers the request, and the checks
+    /// after it do not run.
     #[tokio::test]
     async fn admission_checks_run_in_the_order_they_were_added() {
         for &version in VERSIONS {
             let runs = Arc::new(AtomicUsize::new(0));
+            let second_asked = Arc::new(AtomicUsize::new(0));
             let server = counting_server(&runs)
-                .with_admission(require_session)
-                .with_admission(|_request| Err(McpRejection::session_rejected("second check")));
+                .with_admission(require_session, mcp_admission!())
+                .with_admission(
+                    {
+                        let second_asked = second_asked.clone();
+                        async move |_request| {
+                            second_asked.fetch_add(1, Ordering::SeqCst);
+                            Err(McpRejection::session_rejected("second check"))
+                        }
+                    },
+                    mcp_admission!(),
+                );
             let calls = [
                 Call::new("tools/call", json!({})),
                 Call::new("tools/call", json!({"sessionId": "child"})),
@@ -585,6 +736,7 @@ mod mcp_attribution {
             let (_, responses) = run(version, server, &calls).await;
             assert_rejected(&responses[0], SESSION_REQUIRED);
             assert_rejected(&responses[1], "sessionId rejected: second check");
+            assert_eq!(second_asked.load(Ordering::SeqCst), 1, "{version:?}");
             assert_eq!(runs.load(Ordering::SeqCst), 0, "{version:?}");
         }
     }
@@ -597,7 +749,7 @@ mod mcp_attribution {
             let runs = Arc::new(AtomicUsize::new(0));
             let service = ChildSessionsOnly(Service { runs: runs.clone() });
             let server = McpServer::new_service("own-rule", service, NullRun)
-                .with_admission(require_session);
+                .with_admission(require_session, mcp_admission!());
             let calls = [
                 Call::new("tools/call", json!({})),
                 Call::new("tools/call", json!({"sessionId": "other"})),
@@ -625,7 +777,8 @@ mod mcp_attribution {
             let connector = CountingConnector {
                 connects: connects.clone(),
             };
-            let server = McpServer::new(connector, NullRun).with_admission(require_session);
+            let server = McpServer::new(connector, NullRun)
+                .with_admission(require_session, mcp_admission!());
             let calls = [Call::new("tools/call", json!({}))];
             let (_, responses) = run(version, server, &calls).await;
             assert_rejected(&responses[0], SESSION_REQUIRED);
@@ -639,13 +792,16 @@ mod mcp_attribution {
     async fn admission_check_is_not_asked_about_a_malformed_inner_request() {
         for &version in VERSIONS {
             let asked = Arc::new(AtomicUsize::new(0));
-            let server = server().with_admission({
-                let asked = asked.clone();
-                move |_request| {
-                    asked.fetch_add(1, Ordering::SeqCst);
-                    Err(McpRejection::session_required())
-                }
-            });
+            let server = server().with_admission(
+                {
+                    let asked = asked.clone();
+                    async move |_request| {
+                        asked.fetch_add(1, Ordering::SeqCst);
+                        Err(McpRejection::session_required())
+                    }
+                },
+                mcp_admission!(),
+            );
             let without_meta = Call {
                 params: json!({}),
                 ..Call::new("tools/call", json!({}))
@@ -665,6 +821,79 @@ mod mcp_attribution {
         }
     }
 
+    /// A request holds its `requestId` while its check is pending, so a
+    /// second request with that ID is a duplicate. A rejection frees the ID.
+    #[tokio::test]
+    async fn pending_admission_check_holds_the_request_id_until_it_decides() {
+        for &version in VERSIONS {
+            let runs = Arc::new(AtomicUsize::new(0));
+            let gate = Gate::default();
+            let server = gated_server(&runs, &gate);
+            session(version, server, async |agent| {
+                let pending = Call {
+                    id: "pending",
+                    ..Call::new("tools/call", json!({}))
+                };
+                agent.send(&pending);
+                gate.waiting.notified().await;
+
+                let duplicate = Call {
+                    id: "duplicate",
+                    ..Call::new("tools/call", json!({"sessionId": "child"}))
+                };
+                let response = agent.call(&duplicate).await;
+                assert_rejected(&response, "duplicate active MCP requestId");
+
+                gate.release.notify_one();
+                assert_rejected(&agent.response("pending").await, SESSION_REQUIRED);
+                assert_eq!(runs.load(Ordering::SeqCst), 0, "{version:?}");
+
+                let response = agent.call(&duplicate).await;
+                assert_eq!(
+                    response["result"]["result"]["sessionId"], "child",
+                    "{version:?}"
+                );
+            })
+            .await;
+            assert_eq!(runs.load(Ordering::SeqCst), 1, "{version:?}");
+        }
+    }
+
+    /// Cancelling a request whose check is pending ends it with Request
+    /// cancelled. The check's future is dropped, nothing runs, and the
+    /// `requestId` is free again.
+    #[tokio::test]
+    async fn cancelling_a_request_ends_its_pending_admission_check() {
+        for &version in VERSIONS {
+            let runs = Arc::new(AtomicUsize::new(0));
+            let gate = Gate::default();
+            let server = gated_server(&runs, &gate);
+            session(version, server, async |agent| {
+                agent.send(&Call::new("tools/call", json!({})));
+                gate.waiting.notified().await;
+                assert!(!gate.dropped.load(Ordering::SeqCst), "{version:?}");
+
+                agent.cancel("call");
+                let response = agent.response("call").await;
+                assert_eq!(
+                    response.get("error"),
+                    Some(&json!({"code": -32800, "message": "Request cancelled"})),
+                    "{version:?}"
+                );
+                assert!(gate.dropped.load(Ordering::SeqCst), "{version:?}");
+                assert_eq!(runs.load(Ordering::SeqCst), 0, "{version:?}");
+
+                let call = Call::new("tools/call", json!({"sessionId": "child"}));
+                let response = agent.call(&call).await;
+                assert_eq!(
+                    response["result"]["result"]["sessionId"], "child",
+                    "{version:?}"
+                );
+            })
+            .await;
+        }
+    }
+
     /// An error a service returns is a backend failure, whatever its own
     /// code is. Only an admission check answers `-32602`.
     #[tokio::test]
@@ -675,7 +904,7 @@ mod mcp_attribution {
                 Call::new("test/fail", child.clone()),
                 Call::new("test/invalid_params", child.clone()),
             ];
-            let server = server().with_admission(require_session);
+            let server = server().with_admission(require_session, mcp_admission!());
             let (_, responses) = run(version, server, &calls).await;
             for (response, data) in responses.iter().zip([
                 "Internal error: \"database unavailable\"",
@@ -692,5 +921,39 @@ mod mcp_attribution {
                 );
             }
         }
+    }
+
+    /// An application tests its own check with a request it builds itself.
+    #[test]
+    fn admission_check_can_be_tested_without_a_connection() {
+        let request = McpAdmission::new("server-1", "request-1", "tools/call");
+        assert_eq!(request.server_id().0.as_ref(), "server-1");
+        assert_eq!(request.request_id().0.as_ref(), "request-1");
+        assert_eq!(request.method(), "tools/call");
+        assert_eq!(request.params(), None);
+        assert_eq!(request.tool_name(), None);
+        assert_eq!(request.session_id(), None);
+        assert_eq!(request.tool_call_id(), None);
+        assert_eq!(
+            futures::executor::block_on(require_session(request.clone())),
+            Err(McpRejection::session_required())
+        );
+
+        let params = inner(json!({"name": "write"}));
+        let request = request
+            .with_params(params.as_object().unwrap().clone())
+            .with_session_id("sess_1")
+            .with_tool_call_id("call_1");
+        assert_eq!(request.params(), params.as_object());
+        assert_eq!(request.tool_name(), Some("write"));
+        assert_eq!(request.session_id().map(|id| id.0.as_ref()), Some("sess_1"));
+        assert_eq!(
+            request.tool_call_id().map(|id| id.0.as_ref()),
+            Some("call_1")
+        );
+        assert_eq!(
+            futures::executor::block_on(require_session(request)),
+            Ok(())
+        );
     }
 }

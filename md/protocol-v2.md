@@ -1515,12 +1515,14 @@ For a client or proxy that provides an MCP server:
   The agent can report the call after it sends the request.
 - A server that needs the session, or refuses one after its own check, rejects
   the request before it runs. Add an admission check with
-  `McpServer::with_admission`. It receives an `McpAdmission` and returns an
-  `McpRejection`, such as `McpRejection::session_required()` from
-  `require_session_id()?`, or `McpRejection::session_rejected(reason)`. The
-  agent receives Invalid params (`-32602`), and no service, connector, or tool
-  runs. The check works for every kind of server and every method, including
-  `tools/list` and `server/discover`.
+  `McpServer::with_admission`. It is an async closure, passed with
+  `mcp_admission!()`, that receives an `McpAdmission` and returns an
+  `McpRejection`, such as
+  `McpRejection::session_required()` from `require_session_id()?`, or
+  `McpRejection::session_rejected(reason)`. The agent receives Invalid params
+  (`-32602`), and no service, connector, or tool runs. The check works for
+  every kind of server and every method, including `tools/list` and
+  `server/discover`.
 - A tool can state its own rule: `McpTool::admit`, or `tool_admission` on the
   rmcp `McpServerBuilder` for a `tool_fn` or `tool_fn_mut` tool. See
   [Rejecting a request for its session](./mcp-over-acp.md#rejecting-a-request-for-its-session).

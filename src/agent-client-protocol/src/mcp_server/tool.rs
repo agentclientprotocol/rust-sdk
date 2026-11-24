@@ -79,11 +79,14 @@ pub trait McpTool<R: Role>: Send + Sync {
     /// admitted. The default admits every call.
     ///
     /// A server built from a tool registry, such as one from the rmcp crate's
-    /// `McpServerBuilder`, evaluates this for a `tools/call` request that
-    /// names this tool, after the server's own checks
+    /// `McpServerBuilder`, awaits this for a `tools/call` request that names
+    /// this tool, after the server's own checks
     /// ([`McpServer::with_admission`](super::McpServer::with_admission)). A
     /// rejected call is answered with the outer ACP error Invalid params
     /// (`-32602`), and [`call_tool`](Self::call_tool) is not called.
+    ///
+    /// The returned future is dropped when the request is cancelled, so it
+    /// must not own work that needs cleanup.
     ///
     /// A standalone MCP connection has no `mcp/message` request, so this does
     /// not run there. A tool that is also served standalone still has to
@@ -91,12 +94,15 @@ pub trait McpTool<R: Role>: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns the [`McpRejection`] that answers a call the tool does not
-    /// admit.
+    /// The future returns the [`McpRejection`] that answers a call the tool
+    /// does not admit.
     #[cfg(feature = "unstable_mcp_over_acp")]
-    fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection> {
-        let _ = request;
-        Ok(())
+    fn admit(
+        &self,
+        request: McpAdmission,
+    ) -> impl Future<Output = Result<(), McpRejection>> + Send {
+        drop(request);
+        std::future::ready(Ok(()))
     }
 
     /// Define the tool's behavior. You can implement this with an `async fn`.

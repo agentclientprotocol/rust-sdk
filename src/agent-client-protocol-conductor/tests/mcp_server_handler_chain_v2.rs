@@ -600,10 +600,13 @@ impl ConnectTo<Conductor> for GatedMcpProxy {
     async fn connect_to(self, conductor: impl ConnectTo<Proxy>) -> Result<(), Error> {
         let service = CountingService { runs: self.runs };
         let mcp_server = McpServer::new_service("gated-v2-server", service, NullRun)
-            .with_admission(|request| {
-                request.require_session_id()?;
-                Ok(())
-            });
+            .with_admission(
+                async |request| {
+                    request.require_session_id()?;
+                    Ok(())
+                },
+                agent_client_protocol::mcp_admission!(),
+            );
         Proxy
             .v2()
             .name("gated-v2-mcp-proxy")

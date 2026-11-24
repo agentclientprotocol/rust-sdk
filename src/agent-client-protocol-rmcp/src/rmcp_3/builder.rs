@@ -356,12 +356,14 @@ acp::__if_mcp_over_acp! {
         {
             /// Adds an admission check for one tool by name.
             ///
-            /// The server evaluates it before a `tools/call` request that
-            /// names the tool runs, after the server's own checks
-            /// (`McpServer::with_admission`) and the tool's `McpTool::admit`.
-            /// A rejected call gets the outer ACP error Invalid params
-            /// (`-32602`), and the tool does not run. Use it for a `tool_fn`
-            /// or `tool_fn_mut` tool:
+            /// The check is an async closure of the request, as for
+            /// `McpServer::with_admission`. Pass
+            /// [`mcp_admission!`](super::mcp_admission) as the last argument.
+            /// The server awaits the check before a `tools/call` request that
+            /// names the tool runs, after the server's own checks and the
+            /// tool's `McpTool::admit`. A rejected call gets the outer ACP
+            /// error Invalid params (`-32602`), and the tool does not run.
+            /// Use it for a `tool_fn` or `tool_fn_mut` tool:
             ///
             /// ```
             /// use agent_client_protocol::{Agent, mcp_server::McpServer};
@@ -381,10 +383,14 @@ acp::__if_mcp_over_acp! {
             ///         async |input: NoteInput, _cx| Ok(input.text),
             ///         agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
             ///     )
-            ///     .tool_admission("add_note", |request| {
-            ///         request.require_session_id()?;
-            ///         Ok(())
-            ///     })?
+            ///     .tool_admission(
+            ///         "add_note",
+            ///         async |request| {
+            ///             request.require_session_id()?;
+            ///             Ok(())
+            ///         },
+            ///         agent_client_protocol_rmcp::rmcp_3::mcp_admission!(),
+            ///     )?
             ///     .build();
             /// # drop(server);
             /// # Ok::<(), agent_client_protocol_rmcp::rmcp_3::UnknownToolError>(())
@@ -400,12 +406,22 @@ acp::__if_mcp_over_acp! {
             ///
             /// Returns [`UnknownToolError`] if no tool with this name has
             /// been added.
-            pub fn tool_admission(
+            pub fn tool_admission<F>(
                 mut self,
                 name: &str,
-                admit: impl Fn(&McpAdmission<'_>) -> Result<(), McpRejection> + Send + Sync + 'static,
-            ) -> Result<Self, UnknownToolError> {
-                self.data.add_tool_admission(name, admit)?;
+                admit: F,
+                to_future_hack: impl for<'a> Fn(
+                    &'a F,
+                    McpAdmission,
+                ) -> BoxFuture<'a, Result<(), McpRejection>>
+                + Send
+                + Sync
+                + 'static,
+            ) -> Result<Self, UnknownToolError>
+            where
+                F: AsyncFn(McpAdmission) -> Result<(), McpRejection> + Send + Sync + 'static,
+            {
+                self.data.add_tool_admission(name, admit, to_future_hack)?;
                 Ok(self)
             }
         }
@@ -436,8 +452,9 @@ acp::__if_mcp_over_acp! {
     {
         impl<Counterpart: Role> McpService<Counterpart> for McpServerBuilt<Counterpart> {
             // The rule of the tool that a `tools/call` request names.
-            fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection> {
-                self.data.admit(request)
+            fn admit(&self, request: McpAdmission) -> BoxFuture<'static, Result<(), McpRejection>> {
+                let data = self.data.clone();
+                Box::pin(async move { data.admit(request).await })
             }
 
             fn execute(

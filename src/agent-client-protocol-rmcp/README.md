@@ -59,15 +59,21 @@ attribution has no session.
 A server that needs the session of a request rejects a request without one
 before any tool runs. Add an admission check with `McpServer::with_admission`,
 or give one tool its own rule: `McpTool::admit`, or `tool_admission` on the
-builder for a `tool_fn` or `tool_fn_mut` tool.
+builder for a `tool_fn` or `tool_fn_mut` tool. A check is an async closure.
+Like `tool_fn`, the method takes a macro as its last argument, here
+`mcp_admission!()` from the `rmcp_3` module.
 
 ```rust,ignore
 let server = McpServer::builder("notes")
     .tool_fn("add_note", "Adds a note", add_note, tool_fn!())
-    .tool_admission("add_note", |request| {
-        request.require_session_id()?;
-        Ok(())
-    })?
+    .tool_admission(
+        "add_note",
+        async |request| {
+            request.require_session_id()?;
+            Ok(())
+        },
+        mcp_admission!(),
+    )?
     .build();
 ```
 

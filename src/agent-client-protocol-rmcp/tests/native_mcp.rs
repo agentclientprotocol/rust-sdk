@@ -9,7 +9,7 @@ use agent_client_protocol::{
     schema::ProtocolVersion,
     v2::schema as v2,
 };
-use agent_client_protocol_rmcp::rmcp_3::{McpRequestAttribution, McpServerExt};
+use agent_client_protocol_rmcp::rmcp_3::{McpRequestAttribution, McpServerExt, mcp_admission};
 use futures::StreamExt;
 extern crate rmcp_3 as rmcp;
 
@@ -527,7 +527,7 @@ fn assert_rejected(response: &Value, reason: &str) {
 const SESSION_REQUIRED: &str = "this MCP server requires sessionId on mcp/message";
 
 /// The check of a tool that needs the session of a call.
-fn require_session(request: &McpAdmission<'_>) -> Result<(), McpRejection> {
+async fn require_session(request: McpAdmission) -> Result<(), McpRejection> {
     request.require_session_id()?;
     Ok(())
 }
@@ -558,8 +558,10 @@ impl<R: Role> McpTool<R> for Notes {
         "Returns the session whose notes it lists".into()
     }
 
-    fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection> {
-        require_session(request)
+    async fn admit(&self, request: McpAdmission) -> Result<(), McpRejection> {
+        // A tool's rule can await before it decides.
+        tokio::task::yield_now().await;
+        require_session(request).await
     }
 
     fn call_tool(
@@ -605,17 +607,21 @@ fn gated_tools<R: Role>(
             counted(&runs),
             agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
         )
-        .tool_admission("add_note", require_session)
+        .tool_admission("add_note", require_session, mcp_admission!())
         .unwrap()
-        .tool_admission("count_notes", require_session)
+        .tool_admission("count_notes", require_session, mcp_admission!())
         .unwrap()
         // A second check for one tool runs after the first.
-        .tool_admission("add_note", |request| match request.session_id() {
-            Some(session_id) if session_id.0.as_ref() == "other" => {
-                Err(McpRejection::session_rejected("not a session with notes"))
-            }
-            _ => Ok(()),
-        })
+        .tool_admission(
+            "add_note",
+            async |request| match request.session_id() {
+                Some(session_id) if session_id.0.as_ref() == "other" => {
+                    Err(McpRejection::session_rejected("not a session with notes"))
+                }
+                _ => Ok(()),
+            },
+            mcp_admission!(),
+        )
         .unwrap()
         .build()
 }
@@ -680,14 +686,19 @@ async fn tool_rules_decide_before_the_tool_runs(
 async fn builder_tools_state_their_own_admission_rules() {
     tokio::time::timeout(TIMEOUT, async {
         let server = |runs: &Arc<AtomicUsize>| {
-            gated_tools::<Agent>(runs.clone()).with_admission(|request| {
-                match request.session_id() {
-                    Some(session_id) if session_id.0.as_ref() == "blocked" => {
-                        Err(McpRejection::session_rejected("blocked by the server"))
+            gated_tools::<Agent>(runs.clone()).with_admission(
+                async |request| {
+                    // A check can await before it decides.
+                    tokio::task::yield_now().await;
+                    match request.session_id() {
+                        Some(session_id) if session_id.0.as_ref() == "blocked" => {
+                            Err(McpRejection::session_rejected("blocked by the server"))
+                        }
+                        _ => Ok(()),
                     }
-                    _ => Ok(()),
-                }
-            })
+                },
+                mcp_admission!(),
+            )
         };
         let runs = Arc::new(AtomicUsize::new(0));
         tool_rules_decide_before_the_tool_runs(host(server(&runs)).await, runs).await;
@@ -789,12 +800,16 @@ impl ServerHandler for SessionHandler {
 fn handler_server<R: Role>(runs: &Arc<AtomicUsize>) -> McpServer<R> {
     let runs = runs.clone();
     McpServer::from_rmcp("sessions", move || SessionHandler { runs: runs.clone() }).with_admission(
-        |request| match (request.method(), request.tool_name()) {
-            ("tools/call", Some("notes")) | ("tools/list" | "server/discover", _) => {
-                require_session(request)
+        async |request| {
+            if matches!(
+                (request.method(), request.tool_name()),
+                ("tools/call", Some("notes")) | ("tools/list" | "server/discover", _)
+            ) {
+                request.require_session_id()?;
             }
-            _ => Ok(()),
+            Ok(())
         },
+        mcp_admission!(),
     )
 }
 
