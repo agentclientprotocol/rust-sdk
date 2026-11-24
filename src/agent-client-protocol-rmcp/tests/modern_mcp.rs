@@ -225,6 +225,62 @@ async fn built_server_reports_its_name_and_tool_errors_as_results() -> Result<()
     .expect("named server test timed out")
 }
 
+/// A standalone server has no `mcp/message` request to reject, so the error
+/// the tool returns is an ordinary tool result.
+#[cfg(feature = "unstable_mcp_over_acp")]
+#[tokio::test]
+async fn standalone_tools_that_need_a_session_report_tool_errors() -> Result<(), Error> {
+    use agent_client_protocol::mcp_server::McpConnectionTo;
+
+    tokio::time::timeout(TIMEOUT, async {
+        let server = McpServer::<mcp::Client>::builder("sessions")
+            .tool_fn(
+                "require",
+                "Returns the session of the request",
+                async |_input: Echo, cx: McpConnectionTo<mcp::Client>| {
+                    Ok::<_, Error>(cx.require_session_id()?.to_string())
+                },
+                agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
+            )
+            .tool_fn(
+                "reject",
+                "Refuses the session of the request",
+                async |_input: Echo, cx: McpConnectionTo<mcp::Client>| -> Result<String, Error> {
+                    Err(cx.reject_session("the session is not active"))
+                },
+                agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
+            )
+            .build();
+
+        mcp::Client
+            .builder()
+            .connect_with(server, async |connection| {
+                for (tool, reason) in [
+                    ("require", "a standalone MCP connection has no ACP session"),
+                    ("reject", "sessionId rejected: the session is not active"),
+                ] {
+                    let result = request(
+                        &connection,
+                        "tools/call",
+                        params(json!({"name": tool, "arguments": {"message": "x"}}), tool),
+                    )
+                    .await?;
+                    assert_eq!(result["isError"], true, "{tool}: {result}");
+                    assert!(
+                        result["content"][0]["text"]
+                            .as_str()
+                            .is_some_and(|text| text.contains(reason)),
+                        "{tool}: {result}"
+                    );
+                }
+                Ok(())
+            })
+            .await
+    })
+    .await
+    .expect("standalone session test timed out")
+}
+
 struct RetryServer;
 
 impl ServerHandler for RetryServer {

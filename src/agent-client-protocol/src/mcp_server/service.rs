@@ -167,6 +167,54 @@ impl<Counterpart: Role> McpRequestContext<Counterpart> {
     pub fn tool_call_id(&self) -> Option<&ToolCallId> {
         self.connection.tool_call_id()
     }
+    /// Returns the session the Agent says this request was sent for, or
+    /// rejects the request when the Agent supplied none.
+    ///
+    /// Call it before the request does any work, in a service that needs the
+    /// session to run a request. Like [`session_id`](Self::session_id), it
+    /// does not check the value.
+    ///
+    /// # Errors
+    ///
+    /// When the request has no `sessionId`, this records a rejection of the
+    /// `mcp/message` request and returns it: Invalid params (`-32602`) with a
+    /// `data` string that says the server requires `sessionId`. Return the
+    /// error from [`McpService::execute`].
+    ///
+    /// The response to the `mcp/message` request is then the recorded error,
+    /// as the outer ACP error. It replaces whatever the service returned: a
+    /// result, an MCP error, or another `Err`. The first rejection recorded
+    /// for a request is the one sent.
+    ///
+    /// A rejection only replaces the outcome of an operation that ran to its
+    /// end. A request that was stopped before the service returned is
+    /// answered as if no rejection was recorded, for example with Request
+    /// cancelled (`-32800`) when the Agent cancelled it, or with `-33001`
+    /// when its server registration was removed.
+    ///
+    /// The rejection is shared with [`connection`](Self::connection), so
+    /// [`McpConnectionTo::require_session_id`] has the same effect.
+    pub fn require_session_id(&self) -> Result<&SessionId, Error> {
+        self.connection.require_session_id()
+    }
+    /// Rejects this request because your own check of its session failed.
+    ///
+    /// Use it when the request names a session that is not active on the
+    /// connection and is not a child the Agent announced for an active
+    /// session, or a session that this server was not declared to. Call it
+    /// before the request does any work, and do not run the request for
+    /// another session instead.
+    ///
+    /// Records a rejection of the `mcp/message` request and returns it:
+    /// Invalid params (`-32602`) with the `data` string
+    /// `sessionId rejected: {reason}`. `reason` is sent to the Agent. Return
+    /// the error from [`McpService::execute`]. The response to the request is
+    /// then that error, as described for
+    /// [`require_session_id`](Self::require_session_id).
+    #[must_use = "return the error from `McpService::execute` so the operation ends"]
+    pub fn reject_session(&self, reason: impl std::fmt::Display) -> Error {
+        self.connection.reject_session(reason)
+    }
     /// Host connection for application tools.
     pub fn connection(&self) -> &McpConnectionTo<Counterpart> {
         &self.connection
@@ -209,6 +257,15 @@ pub trait McpService<Counterpart: Role>: Send + Sync + 'static {
     /// On operation cancellation, stop user work and complete owned cleanup
     /// before returning. The binding drives this future through cancellation;
     /// dropping it is not used as a substitute for joining cleanup.
+    ///
+    /// # Errors
+    ///
+    /// An `Err` from an operation that ran to its end is reported to the
+    /// Agent as an MCP backend failure (`-33002`) with the error's text as
+    /// `data`, whatever the error's own code is. To answer Invalid params
+    /// (`-32602`) for a missing or refused session, use
+    /// [`McpRequestContext::require_session_id`] or
+    /// [`McpRequestContext::reject_session`].
     fn execute(
         &self,
         request: McpRequest,

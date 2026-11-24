@@ -16,7 +16,9 @@ use agent_client_protocol::{
     Agent, Client, Conductor, ConnectTo, Proxy, schema::ProtocolVersion, v2::schema as v2,
 };
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
-use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;
+use agent_client_protocol_polyfill::mcp_over_acp::{
+    McpHttpRequestAttribution, McpHttpRequestInfo, McpOverAcpPolyfill,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -61,7 +63,17 @@ impl ConnectTo<Client> for TestAgent {
     }
 }
 
-struct TestProvider(Arc<Mutex<Vec<String>>>, Arc<AtomicUsize>, Arc<AtomicUsize>);
+/// The `sessionId` and `toolCallId` of one `mcp/message` request.
+type Attribution = (Option<String>, Option<String>);
+
+/// Records the logical IDs, the number of requests, the number of cancelled
+/// requests, and the attribution of each request.
+struct TestProvider(
+    Arc<Mutex<Vec<String>>>,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+    Arc<Mutex<Vec<Attribution>>>,
+);
 
 impl ConnectTo<Conductor> for TestProvider {
     async fn connect_to(
@@ -84,6 +96,10 @@ impl ConnectTo<Conductor> for TestProvider {
                     assert!(uuid::Uuid::parse_str(&request.request_id.to_string()).is_ok());
                     self.0.lock().unwrap().push(request.request_id.to_string());
                     self.1.fetch_add(1, Ordering::SeqCst);
+                    self.3.lock().unwrap().push((
+                        request.session_id.as_ref().map(ToString::to_string),
+                        request.tool_call_id.as_ref().map(ToString::to_string),
+                    ));
                     if request.method == "subscriptions/listen"
                         || request.method == "subscriptions/flood"
                     {
@@ -186,6 +202,24 @@ async fn run(
     cancelled: Arc<AtomicUsize>,
     editor: impl AsyncFnOnce(ConnectionTo<Agent>) -> Result<(), agent_client_protocol::Error>,
 ) -> Result<(), agent_client_protocol::Error> {
+    run_chain(
+        TestAgent {
+            capabilities,
+            observed,
+        },
+        TestProvider(ids, count, cancelled, Arc::default()),
+        McpOverAcpPolyfill::http(),
+        editor,
+    )
+    .await
+}
+
+async fn run_chain(
+    agent: TestAgent,
+    provider: TestProvider,
+    polyfill: McpOverAcpPolyfill,
+    editor: impl AsyncFnOnce(ConnectionTo<Agent>) -> Result<(), agent_client_protocol::Error>,
+) -> Result<(), agent_client_protocol::Error> {
     let (editor_out, conductor_in) = duplex(4096);
     let (conductor_out, editor_in) = duplex(4096);
     let transport =
@@ -196,12 +230,7 @@ async fn run(
         .with_spawned(|_cx| async move {
             ConductorImpl::new_agent(
                 "v2-mcp-test-conductor",
-                ProxiesAndAgent::new(TestAgent {
-                    capabilities,
-                    observed,
-                })
-                .proxy(TestProvider(ids, count, cancelled))
-                .proxy(McpOverAcpPolyfill::http()),
+                ProxiesAndAgent::new(agent).proxy(provider).proxy(polyfill),
             )
             .run(agent_client_protocol::ByteStreams::new(
                 conductor_out.compat_write(),
@@ -227,6 +256,18 @@ fn initialize() -> v2::InitializeRequest {
 }
 
 async fn post(url: &str, bearer: &str, method: &str, tool: &str) -> serde_json::Value {
+    post_with_meta(url, bearer, method, tool, serde_json::Map::new()).await
+}
+
+/// Like [`post`], with `host_meta` added to the request's `_meta`, as the
+/// host of an MCP client would.
+async fn post_with_meta(
+    url: &str,
+    bearer: &str,
+    method: &str,
+    tool: &str,
+    host_meta: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Value {
     let (address, route) = url
         .strip_prefix("http://")
         .unwrap()
@@ -238,6 +279,7 @@ async fn post(url: &str, bearer: &str, method: &str, tool: &str) -> serde_json::
             "io.modelcontextprotocol/clientCapabilities":{},
             "io.modelcontextprotocol/clientInfo":{"name":"http-fixture","version":"1"}}
     });
+    params["_meta"].as_object_mut().unwrap().extend(host_meta);
     if method == "tools/call" {
         params["name"] = serde_json::json!(tool);
         params["arguments"] = serde_json::json!({});
@@ -511,4 +553,111 @@ async fn closing_subscription_stream_cancels_only_its_native_request()
             Ok(())
         },
     ).await
+}
+
+/// What a host that recorded two tool calls returns for `request`. It finds
+/// the tool call by the tool-use ID its MCP client sends in `_meta`.
+fn recorded_attribution(request: &McpHttpRequestInfo) -> Option<McpHttpRequestAttribution> {
+    let meta = request.params.as_ref()?.get("_meta")?;
+    match meta.get("example.com/toolUseId")?.as_str()? {
+        "toolu_1" => Some(McpHttpRequestAttribution::new("sess_child_1").tool_call_id("call_001")),
+        "toolu_2" => Some(McpHttpRequestAttribution::new("sess_root")),
+        _ => None,
+    }
+}
+
+/// The bridge sends the session and tool call that the host's resolver
+/// returns. It sends neither for a request the host cannot match, and for
+/// every request when there is no resolver.
+#[tokio::test]
+async fn v2_http_requests_carry_only_the_attribution_the_host_supplies()
+-> Result<(), agent_client_protocol::Error> {
+    for with_resolver in [true, false] {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let attributions = Arc::new(Mutex::new(Vec::new()));
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let polyfill = if with_resolver {
+            let asked = asked.clone();
+            McpOverAcpPolyfill::http().with_attribution(move |request| {
+                let attribution = recorded_attribution(&request);
+                asked.lock().unwrap().push(request);
+                // A resolver can wait, for example for the host's own record
+                // of the tool call.
+                async move {
+                    tokio::task::yield_now().await;
+                    Ok(attribution)
+                }
+            })
+        } else {
+            McpOverAcpPolyfill::http()
+        };
+        run_chain(
+            TestAgent {
+                capabilities: v2::AgentCapabilities::new().session(
+                    v2::SessionCapabilities::new()
+                        .mcp(v2::McpCapabilities::new().http(v2::McpHttpCapabilities::new())),
+                ),
+                observed: observed.clone(),
+            },
+            TestProvider(
+                Arc::default(),
+                Arc::default(),
+                Arc::default(),
+                attributions.clone(),
+            ),
+            polyfill,
+            async |connection| {
+                connection.send_request(initialize()).block_task().await?;
+                connection
+                    .send_request(
+                        v2::NewSessionRequest::new(PathBuf::from("/tmp"))
+                            .mcp_servers(vec![native_server()]),
+                    )
+                    .block_task()
+                    .await?;
+                let (url, bearer) = {
+                    let observed = observed.lock().unwrap();
+                    let v2::McpServer::Http(server) = &observed[0] else {
+                        panic!("expected HTTP endpoint")
+                    };
+                    (server.url.clone(), server.headers[0].value.clone())
+                };
+                for tool_use in ["toolu_1", "toolu_2", "toolu_unknown"] {
+                    let host_meta = serde_json::Map::from_iter([(
+                        "example.com/toolUseId".to_string(),
+                        serde_json::json!(tool_use),
+                    )]);
+                    let call = post_with_meta(&url, &bearer, "tools/call", "ping", host_meta).await;
+                    assert!(call["result"].is_object(), "{tool_use}");
+                }
+                Ok(())
+            },
+        )
+        .await?;
+
+        let expected = if with_resolver {
+            vec![
+                (
+                    Some("sess_child_1".to_string()),
+                    Some("call_001".to_string()),
+                ),
+                (Some("sess_root".to_string()), None),
+                (None, None),
+            ]
+        } else {
+            vec![(None, None); 3]
+        };
+        assert_eq!(*attributions.lock().unwrap(), expected);
+
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.len(), if with_resolver { 3 } else { 0 });
+        if let Some(first) = asked.first() {
+            assert_eq!(first.server_id, SERVER_ID);
+            assert_eq!(first.method, "tools/call");
+            let params = first.params.as_ref().expect("inner params");
+            assert_eq!(params["name"], "ping");
+            assert_eq!(params["_meta"]["example.com/toolUseId"], "toolu_1");
+        }
+    }
+    Ok(())
 }

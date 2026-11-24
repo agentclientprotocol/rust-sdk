@@ -351,6 +351,7 @@ where
             },
             connection: connection.clone(),
             cleanup: Some(Arc::default()),
+            rejection: Some(Arc::default()),
         };
         let cancellation = responder.cancellation();
         let task_connection = connection.clone();
@@ -360,7 +361,9 @@ where
         // One protected task atomically owns construction, driving, forwarding
         // and cleanup. Rejected admission cannot start half an operation.
         connection.spawn_protected(async move {
-            let result = if let Some(service) = service {
+            // `interrupted` is true when cancellation, shutdown or provider
+            // removal ended the operation, and false when it ran to its end.
+            let (result, interrupted) = if let Some(service) = service {
                 let operation_cancellation = McpOperationCancellation::new();
                 let alive = Arc::new(Mutex::new(true));
                 let notify = {
@@ -412,23 +415,26 @@ where
                 let operation = service.execute(McpRequest { method, params }, context);
                 let stop = stopped(&cancellation, &task_connection, removed);
                 futures::pin_mut!(stop);
-                let result = match future::select(stop, operation).await {
+                let ended = match future::select(stop, operation).await {
                     Either::Left((reason, operation)) => {
                         operation_cancellation.cancel();
                         *alive.lock().expect("MCP output gate poisoned") = false;
                         // Do not abandon cleanup by dropping the service future.
                         drop(operation.await);
-                        Err(reason)
+                        (Err(reason), true)
                     }
-                    Either::Right((result, _)) => result.map_err(backend_failure),
+                    Either::Right((result, _)) => (result.map_err(backend_failure), false),
                 };
                 *alive.lock().expect("MCP output gate poisoned") = false;
-                result
+                ended
             } else {
                 let backend = connector.connect(cleanup_connection.clone());
                 let (mut client, mut driver) = backend.into_channel_and_future();
                 let inner_id = crate::RawJsonRpcId::Str(request_id.0.to_string());
-                let result = {
+                // Set when the frame loop finds the output authority revoked
+                // before `stopped` reports the same cancellation or removal.
+                let mut revoked = false;
+                let (result, stop_won) = {
                     let process = async {
                         let raw = RawJsonRpcMessage::request(
                             method,
@@ -447,6 +453,7 @@ where
                             if let Some(error) =
                                 output_revoked(&cancellation, &task_connection, &provider)
                             {
+                                revoked = true;
                                 return Err(error);
                             }
                             let frame = match driver.as_mut() {
@@ -498,12 +505,14 @@ where
                                                 ));
                                             }
                                         };
-                                    with_output_authority(
+                                    // The outer error is revoked authority.
+                                    // The inner one is the send's own failure.
+                                    let sent = with_output_authority(
                                         &cancellation,
                                         &task_connection,
                                         &provider,
                                         || {
-                                            task_connection.send_notification_to(
+                                            Ok(task_connection.send_notification_to(
                                                 Agent,
                                                 Protocol::notification(
                                                     server_id.clone(),
@@ -511,9 +520,16 @@ where
                                                     notification.method.to_string(),
                                                     params,
                                                 ),
-                                            )
+                                            ))
                                         },
-                                    )?;
+                                    );
+                                    match sent {
+                                        Ok(sent) => sent?,
+                                        Err(error) => {
+                                            revoked = true;
+                                            return Err(error);
+                                        }
+                                    }
                                 }
                                 RawJsonRpcMessage::Request(_) => {
                                     return Err(backend_failure(
@@ -526,8 +542,8 @@ where
                     let stop = stopped(&cancellation, &task_connection, removed);
                     futures::pin_mut!(process, stop);
                     match future::select(stop, process).await {
-                        Either::Left((reason, _)) => Err(reason),
-                        Either::Right((result, _)) => result,
+                        Either::Left((reason, _)) => (Err(reason), true),
+                        Either::Right((result, _)) => (result, false),
                     }
                 };
                 client.rx.close();
@@ -542,9 +558,19 @@ where
                 } else {
                     Ok(())
                 };
-                cleanup.and(result)
+                (cleanup.and(result), stop_won || revoked)
             };
             cleanup_connection.wait_cleanup().await;
+            // `require_session_id` and `reject_session` record a rejection on
+            // the connection that the service and its tools share. It replaces
+            // the outcome of an operation that ran to its end, because a
+            // function tool cannot return an outer error itself: its `Err`
+            // becomes an `isError` result. The result of an interrupted
+            // operation stays as it is. Clear the slot either way.
+            let result = match cleanup_connection.take_rejection() {
+                Some(rejection) if !interrupted => Err(rejection),
+                _ => result,
+            };
             // Apply the ACP binding's version projection once for either
             // execution path, without changing opaque results of other methods.
             let result = result.and_then(|outcome| {
@@ -690,6 +716,9 @@ mod tests {
                 let cleaning = self.cleaning.lock().unwrap().take().unwrap();
                 let release = self.release.lock().unwrap().take().unwrap();
                 Box::pin(async move {
+                    // The removal below ends the operation, so this rejection
+                    // must not replace the removal error.
+                    let _rejection = context.reject_session("recorded before the removal");
                     context_tx.send(context.clone()).unwrap();
                     context.operation_cancellation().cancelled().await;
                     assert!(

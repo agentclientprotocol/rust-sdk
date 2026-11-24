@@ -52,6 +52,17 @@ const DEFAULT_SERVER_VERSION: &str = "0.0.0";
 ///   `isError: true` and the error text as its content, so the model can see
 ///   and correct them.
 /// - A cancelled call gets an internal JSON-RPC error (`-32603`).
+/// - With the core crate's `unstable_mcp_over_acp` feature, a tool attached to
+///   an ACP connection can reject the whole `mcp/message` request for its
+///   session. It calls `require_session_id` or `reject_session` on its
+///   `McpConnectionTo` and returns the error. The agent then receives the
+///   outer ACP error Invalid params (`-32602`) instead of a tool result.
+///
+/// The builder answers `tools/list` and discovery itself, so only its tools can
+/// require a session. A server that needs the session for those requests is an
+/// rmcp handler passed to [`McpServerExt::from_rmcp`](super::McpServerExt::from_rmcp),
+/// which reads it with [`McpRequestAttribution`](super::McpRequestAttribution),
+/// or a hand-written `McpService`.
 ///
 /// # Example
 ///

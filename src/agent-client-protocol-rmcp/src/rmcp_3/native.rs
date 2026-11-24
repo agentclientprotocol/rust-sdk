@@ -1,5 +1,6 @@
 //! Direct `OneshotTransport` adapter; no hidden initialization or byte bridge.
 
+use super::McpRequestAttribution;
 use ::rmcp_3 as rmcp;
 use acp::{
     Role,
@@ -12,7 +13,7 @@ use futures::{
 };
 use rmcp::{
     RoleServer, Service,
-    model::{ClientJsonRpcMessage, ServerJsonRpcMessage},
+    model::{ClientJsonRpcMessage, GetExtensions, JsonRpcMessage, ServerJsonRpcMessage},
     service::{self, NotificationContext, RequestContext},
     transport::OneshotTransport,
 };
@@ -135,7 +136,7 @@ pub(crate) fn execute<R: Role, S: Service<RoleServer>>(
 ) -> BoxFuture<'static, Result<McpOutcome, acp::Error>> {
     Box::pin(async move {
         let id = context.request_id().0.to_string();
-        let inbound: ClientJsonRpcMessage = match serde_json::from_value(serde_json::json!({
+        let mut inbound: ClientJsonRpcMessage = match serde_json::from_value(serde_json::json!({
             "jsonrpc":"2.0", "id":id, "method":request.method, "params":request.params,
         })) {
             Ok(inbound) => inbound,
@@ -153,6 +154,17 @@ pub(crate) fn execute<R: Role, S: Service<RoleServer>>(
                 ));
             }
         };
+        // Hand the handler the attribution and the host connection of this
+        // `mcp/message` request, the way an rmcp transport passes its own
+        // data. rmcp moves a request's extensions into
+        // `RequestContext::extensions`. Both share the request's rejection
+        // slot.
+        if let JsonRpcMessage::Request(inbound) = &mut inbound {
+            let connection = context.connection();
+            let extensions = inbound.request.extensions_mut();
+            extensions.insert(McpRequestAttribution::for_request(connection.clone()));
+            extensions.insert(connection.clone());
+        }
         let (transport, mut output) = OneshotTransport::<RoleServer>::new(inbound);
         let cancel = CancellationToken::new();
         let completions = Arc::new(Mutex::new(Vec::new()));

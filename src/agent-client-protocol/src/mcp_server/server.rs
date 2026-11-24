@@ -7,7 +7,7 @@ use futures::{StreamExt, channel::mpsc};
 use crate::{
     ConnectTo, Dispatch, DynConnectTo, Role,
     jsonrpc::run::{NullRun, RunWithConnectionTo},
-    mcp_server::{McpConnectionContext, McpConnectionTo, McpServerConnect},
+    mcp_server::{McpConnectionTo, McpServerConnect},
     role,
 };
 
@@ -582,12 +582,7 @@ where
             )
             .with_spawned(async move |connection_to_client| {
                 let spawned_server: DynConnectTo<role::mcp::Client> =
-                    connect.connect(McpConnectionTo {
-                        context: McpConnectionContext::Standalone,
-                        connection: connection_to_client.clone(),
-                        #[cfg(feature = "unstable_mcp_over_acp")]
-                        cleanup: None,
-                    });
+                    connect.connect(McpConnectionTo::standalone(connection_to_client.clone()));
 
                 role::mcp::Client
                     .builder()

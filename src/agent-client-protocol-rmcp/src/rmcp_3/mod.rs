@@ -48,6 +48,7 @@ use futures_concurrency::future::TryJoin as _;
 use rmcp::ServiceExt;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+mod attribution;
 mod builder;
 
 // The native MCP-over-ACP path follows the core crate's
@@ -65,6 +66,7 @@ agent_client_protocol::__if_mcp_over_acp! {
 
 pub use agent_client_protocol::mcp_server::{McpTool, UnknownToolError};
 pub use agent_client_protocol::{tool_fn, tool_fn_mut};
+pub use attribution::McpRequestAttribution;
 pub use builder::McpServerBuilder;
 
 mod sealed {
@@ -89,6 +91,49 @@ pub trait McpServerExt<Counterpart: Role>: sealed::Sealed {
     /// Native ACP requests lazily share one application service. Standalone
     /// connections invoke the factory independently and retain their ordinary
     /// MCP lifecycle.
+    ///
+    /// # The session and tool call of a request
+    ///
+    /// A handler reads the ACP session and tool call of a request from a
+    /// [`McpRequestAttribution`]. A `#[tool]` method takes it as a parameter:
+    ///
+    /// ```ignore
+    /// #[tool(description = "Lists the notes of the session")]
+    /// async fn list_notes(
+    ///     &self,
+    ///     attribution: McpRequestAttribution,
+    /// ) -> Result<CallToolResult, ErrorData> {
+    ///     let session_id = attribution.require_session_id()?;
+    ///     // ...
+    /// }
+    /// ```
+    ///
+    /// A `ServerHandler` method you write yourself gets it with
+    /// [`McpRequestAttribution::of`], in any method that receives a
+    /// `RequestContext`:
+    ///
+    /// ```ignore
+    /// let attribution = McpRequestAttribution::of(&context);
+    /// let session_id = attribution.require_session_id()?;
+    /// ```
+    ///
+    /// `require_session_id` and `reject_session` reject the whole
+    /// `mcp/message` request with Invalid params (`-32602`), which replaces
+    /// the MCP error the handler returns. Use them in `list_tools` or
+    /// `discover` when the server needs the session before any tool runs.
+    ///
+    /// On a standalone connection the attribution has no session, and
+    /// `require_session_id` returns its error without rejecting anything.
+    ///
+    /// # The host connection of a request
+    ///
+    /// With the core crate's `unstable_mcp_over_acp` feature, a handler that
+    /// needs the host ACP connection finds the request's [`McpConnectionTo`]
+    /// in rmcp's request extensions, with
+    /// `context.extensions.get::<McpConnectionTo<Counterpart>>()`.
+    /// `Counterpart` is the role this server is attached to, such as `Agent`.
+    /// A lookup with another role returns `None`, and so does every lookup on
+    /// a standalone connection.
     ///
     /// # See also
     ///

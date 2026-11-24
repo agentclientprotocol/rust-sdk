@@ -387,7 +387,7 @@ mod tests {
     use serde::Deserialize;
 
     use super::*;
-    use crate::{Channel, mcp_server::McpConnectionContext, role::mcp};
+    use crate::{Channel, role::mcp};
 
     #[derive(Deserialize, JsonSchema)]
     struct EchoInput {
@@ -423,12 +423,7 @@ mod tests {
         futures::executor::block_on(mcp::Server.builder().connect_with(
             channel,
             async |connection| {
-                let context = McpConnectionTo {
-                    context: McpConnectionContext::Standalone,
-                    connection,
-                    #[cfg(feature = "unstable_mcp_over_acp")]
-                    cleanup: None,
-                };
+                let context = McpConnectionTo::standalone(connection);
                 let mut registry = McpToolRegistry::default();
                 registry.register_tool(Echo);
                 let tool = registry.tool("echo").expect("echo is registered");
