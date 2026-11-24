@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [5.6.0](https://github.com/agentclientprotocol/rust-sdk/compare/v5.5.1...v5.6.0) - 2026-11-24
+
+### Added
+
+- let MCP servers admit or reject a request by its session ([#526](https://github.com/agentclientprotocol/rust-sdk/pull/526))
+- *(acp)* adopt schema 1.22.0 and expose mcp/message attribution ([#525](https://github.com/agentclientprotocol/rust-sdk/pull/525))
+
 ## [5.5.1](https://github.com/agentclientprotocol/rust-sdk/compare/v5.5.0...v5.5.1) - 2026-11-21
 
 ### Other
