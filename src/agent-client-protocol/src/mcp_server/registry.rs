@@ -9,6 +9,8 @@ use serde_json::{Map, Value};
 
 use crate::{Error, Role};
 
+#[cfg(feature = "unstable_mcp_over_acp")]
+use super::{McpAdmission, McpRejection, admission::AdmissionChecks};
 use super::{McpConnectionTo, McpTool};
 
 /// JSON Schema object used to describe MCP tool inputs and outputs.
@@ -138,6 +140,9 @@ impl McpToolMetadata {
 pub struct RegisteredMcpTool<Counterpart: Role> {
     metadata: McpToolMetadata,
     tool: Arc<dyn ErasedMcpTool<Counterpart>>,
+    /// The checks from `McpToolRegistry::add_tool_admission`.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    admission: AdmissionChecks,
 }
 
 impl<Counterpart: Role + std::fmt::Debug> std::fmt::Debug for RegisteredMcpTool<Counterpart> {
@@ -155,6 +160,8 @@ impl<Counterpart: Role> RegisteredMcpTool<Counterpart> {
         Self {
             metadata,
             tool: make_erased_mcp_tool(tool),
+            #[cfg(feature = "unstable_mcp_over_acp")]
+            admission: AdmissionChecks::default(),
         }
     }
 
@@ -189,6 +196,21 @@ impl<Counterpart: Role> RegisteredMcpTool<Counterpart> {
         connection: McpConnectionTo<Counterpart>,
     ) -> BoxFuture<'_, Result<Value, Error>> {
         self.tool.call_tool(input, connection)
+    }
+
+    /// Decides whether a call of this tool over ACP is admitted.
+    ///
+    /// Runs the tool's own [`McpTool::admit`], then the checks added for it
+    /// with [`McpToolRegistry::add_tool_admission`] in the order they were
+    /// added.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`McpRejection`].
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection> {
+        self.tool.admit(request)?;
+        self.admission.admit(request)
     }
 }
 
@@ -270,6 +292,49 @@ impl<Counterpart: Role> McpToolRegistry<Counterpart> {
         self.tool_indices.contains_key(name)
     }
 
+    /// Adds an admission check for one registered tool, for a tool that
+    /// cannot state its rule in [`McpTool::admit`], such as a function tool.
+    ///
+    /// The check runs after the tool's own [`McpTool::admit`] and after the
+    /// checks added for the tool before. Registering another tool under the
+    /// same name removes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UnknownToolError`] if no tool with this name is registered.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub fn add_tool_admission(
+        &mut self,
+        name: &str,
+        admit: impl Fn(&McpAdmission<'_>) -> Result<(), McpRejection> + Send + Sync + 'static,
+    ) -> Result<(), UnknownToolError> {
+        let tool = self
+            .tool_indices
+            .get(name)
+            .and_then(|&index| self.tools.get_mut(index))
+            .ok_or_else(|| UnknownToolError::new(name))?;
+        tool.admission.push(admit);
+        Ok(())
+    }
+
+    /// Decides whether a request to a server built from this registry is
+    /// admitted.
+    ///
+    /// For a `tools/call` request that names an enabled tool, this is that
+    /// tool's [`RegisteredMcpTool::admit`]. Every other request is admitted,
+    /// including a call of a tool that is unknown or disabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns the tool's [`McpRejection`].
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection> {
+        match request.tool_name().and_then(|name| self.enabled_tool(name)) {
+            Some(tool) => tool.admit(request),
+            None => Ok(()),
+        }
+    }
+
     /// Disable all tools. After calling this, only tools explicitly enabled
     /// with [`enable_tool`](Self::enable_tool) will be available.
     pub fn disable_all_tools(&mut self) {
@@ -330,6 +395,9 @@ trait ErasedMcpTool<Counterpart: Role>: Send + Sync {
         input: Value,
         connection: McpConnectionTo<Counterpart>,
     ) -> BoxFuture<'_, Result<Value, Error>>;
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection>;
 }
 
 fn make_erased_mcp_tool<R, M>(tool: M) -> Arc<dyn ErasedMcpTool<R>>
@@ -357,6 +425,11 @@ where
                 serde_json::to_value(self.tool.call_tool(input, context).await?)
                     .map_err(|error| Error::internal_error().data(error.to_string()))
             })
+        }
+
+        #[cfg(feature = "unstable_mcp_over_acp")]
+        fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection> {
+            self.tool.admit(request)
         }
     }
 
@@ -387,7 +460,7 @@ mod tests {
     use serde::Deserialize;
 
     use super::*;
-    use crate::{Channel, role::mcp};
+    use crate::{Channel, mcp_server::McpConnectionContext, role::mcp};
 
     #[derive(Deserialize, JsonSchema)]
     struct EchoInput {
@@ -423,7 +496,12 @@ mod tests {
         futures::executor::block_on(mcp::Server.builder().connect_with(
             channel,
             async |connection| {
-                let context = McpConnectionTo::standalone(connection);
+                let context = McpConnectionTo {
+                    context: McpConnectionContext::Standalone,
+                    connection,
+                    #[cfg(feature = "unstable_mcp_over_acp")]
+                    cleanup: None,
+                };
                 let mut registry = McpToolRegistry::default();
                 registry.register_tool(Echo);
                 let tool = registry.tool("echo").expect("echo is registered");
@@ -442,5 +520,66 @@ mod tests {
             },
         ))
         .unwrap();
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[test]
+    fn registry_admits_by_the_rule_of_the_enabled_tool_a_call_names() {
+        use crate::v1::schema::{McpRequestId, McpServerAcpId};
+
+        fn admit(
+            registry: &McpToolRegistry<mcp::Client>,
+            method: &str,
+            tool: &str,
+        ) -> Result<(), McpRejection> {
+            let server_id = McpServerAcpId::new("server");
+            let request_id = McpRequestId::new("request");
+            let params = serde_json::json!({ "name": tool });
+            registry.admit(&McpAdmission::new(
+                &server_id,
+                &request_id,
+                method,
+                params.as_object(),
+                None,
+                None,
+            ))
+        }
+
+        let mut registry = McpToolRegistry::default();
+        registry.register_tool(Echo);
+        assert_eq!(
+            registry
+                .add_tool_admission("ech", |_request| Ok(()))
+                .unwrap_err()
+                .name(),
+            "ech"
+        );
+        assert_eq!(admit(&registry, "tools/call", "echo"), Ok(()));
+
+        registry
+            .add_tool_admission("echo", |request| {
+                request.require_session_id()?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            admit(&registry, "tools/call", "echo"),
+            Err(McpRejection::session_required())
+        );
+        // Only a call of the tool is its business.
+        assert_eq!(admit(&registry, "tools/list", "echo"), Ok(()));
+        assert_eq!(admit(&registry, "tools/call", "missing"), Ok(()));
+
+        registry.disable_tool("echo").unwrap();
+        assert_eq!(admit(&registry, "tools/call", "echo"), Ok(()));
+        registry.enable_tool("echo").unwrap();
+        assert_eq!(
+            admit(&registry, "tools/call", "echo"),
+            Err(McpRejection::session_required())
+        );
+
+        // Registering the tool again replaces it and the checks added for it.
+        registry.register_tool(Echo);
+        assert_eq!(admit(&registry, "tools/call", "echo"), Ok(()));
     }
 }

@@ -1,9 +1,9 @@
 //! Request-scoped native MCP execution and cleanup.
 
 use super::{
-    MCP_BACKEND_FAILURE, MCP_SERVER_UNAVAILABLE, McpConnectionContext, McpConnectionTo,
-    McpOperationCancellation, McpOutcome, McpRequest, McpRequestContext, McpServerConnect,
-    McpService,
+    MCP_BACKEND_FAILURE, MCP_SERVER_UNAVAILABLE, McpAdmission, McpConnectionContext,
+    McpConnectionTo, McpOperationCancellation, McpOutcome, McpRequest, McpRequestContext,
+    McpServerConnect, McpService, admission::AdmissionChecks,
 };
 use crate::{
     Agent, ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcNotification,
@@ -231,6 +231,7 @@ pub(super) struct McpActiveSession<Counterpart: Role, Protocol = V1McpProtocol> 
     server_id: McpServerAcpId,
     mcp_connect: Arc<dyn McpServerConnect<Counterpart>>,
     service: Option<Arc<dyn McpService<Counterpart>>>,
+    admission: AdmissionChecks,
     active: ActiveRequests,
     protocol: PhantomData<fn() -> Protocol>,
 }
@@ -305,9 +306,16 @@ where
             server_id,
             mcp_connect,
             service,
+            admission: AdmissionChecks::default(),
             active: Arc::default(),
             protocol: PhantomData,
         }
+    }
+
+    /// Sets the checks from `McpServer::with_admission`.
+    pub(super) fn with_admission(mut self, admission: AdmissionChecks) -> Self {
+        self.admission = admission;
+        self
     }
 
     pub(super) fn cleanup(&self) -> Arc<dyn DynamicHandlerCleanup> {
@@ -335,6 +343,28 @@ where
             responder.respond(Protocol::response(McpOutcome::Error(into_mcp_error(error))))?;
             return Ok(Handled::Yes);
         }
+        // The server's checks, then the service's own rule, decide whether the
+        // request runs. A rejected request is never held as active, and no
+        // service, connector or tool is called for it.
+        let admission = McpAdmission::new(
+            &server_id,
+            &request_id,
+            &method,
+            params.as_ref(),
+            session_id.as_ref(),
+            tool_call_id.as_ref(),
+        );
+        let admitted = self
+            .admission
+            .admit(&admission)
+            .and_then(|()| match &self.service {
+                Some(service) => service.admit(&admission),
+                None => Ok(()),
+            });
+        if let Err(rejection) = admitted {
+            responder.respond_with_error(rejection.into_error())?;
+            return Ok(Handled::Yes);
+        }
         let (guard, removed) = match admit_request(&self.active, request_id.clone()) {
             Ok(admitted) => admitted,
             Err(error) => {
@@ -351,7 +381,6 @@ where
             },
             connection: connection.clone(),
             cleanup: Some(Arc::default()),
-            rejection: Some(Arc::default()),
         };
         let cancellation = responder.cancellation();
         let task_connection = connection.clone();
@@ -361,9 +390,7 @@ where
         // One protected task atomically owns construction, driving, forwarding
         // and cleanup. Rejected admission cannot start half an operation.
         connection.spawn_protected(async move {
-            // `interrupted` is true when cancellation, shutdown or provider
-            // removal ended the operation, and false when it ran to its end.
-            let (result, interrupted) = if let Some(service) = service {
+            let result = if let Some(service) = service {
                 let operation_cancellation = McpOperationCancellation::new();
                 let alive = Arc::new(Mutex::new(true));
                 let notify = {
@@ -415,26 +442,23 @@ where
                 let operation = service.execute(McpRequest { method, params }, context);
                 let stop = stopped(&cancellation, &task_connection, removed);
                 futures::pin_mut!(stop);
-                let ended = match future::select(stop, operation).await {
+                let result = match future::select(stop, operation).await {
                     Either::Left((reason, operation)) => {
                         operation_cancellation.cancel();
                         *alive.lock().expect("MCP output gate poisoned") = false;
                         // Do not abandon cleanup by dropping the service future.
                         drop(operation.await);
-                        (Err(reason), true)
+                        Err(reason)
                     }
-                    Either::Right((result, _)) => (result.map_err(backend_failure), false),
+                    Either::Right((result, _)) => result.map_err(backend_failure),
                 };
                 *alive.lock().expect("MCP output gate poisoned") = false;
-                ended
+                result
             } else {
                 let backend = connector.connect(cleanup_connection.clone());
                 let (mut client, mut driver) = backend.into_channel_and_future();
                 let inner_id = crate::RawJsonRpcId::Str(request_id.0.to_string());
-                // Set when the frame loop finds the output authority revoked
-                // before `stopped` reports the same cancellation or removal.
-                let mut revoked = false;
-                let (result, stop_won) = {
+                let result = {
                     let process = async {
                         let raw = RawJsonRpcMessage::request(
                             method,
@@ -453,7 +477,6 @@ where
                             if let Some(error) =
                                 output_revoked(&cancellation, &task_connection, &provider)
                             {
-                                revoked = true;
                                 return Err(error);
                             }
                             let frame = match driver.as_mut() {
@@ -505,14 +528,12 @@ where
                                                 ));
                                             }
                                         };
-                                    // The outer error is revoked authority.
-                                    // The inner one is the send's own failure.
-                                    let sent = with_output_authority(
+                                    with_output_authority(
                                         &cancellation,
                                         &task_connection,
                                         &provider,
                                         || {
-                                            Ok(task_connection.send_notification_to(
+                                            task_connection.send_notification_to(
                                                 Agent,
                                                 Protocol::notification(
                                                     server_id.clone(),
@@ -520,16 +541,9 @@ where
                                                     notification.method.to_string(),
                                                     params,
                                                 ),
-                                            ))
+                                            )
                                         },
-                                    );
-                                    match sent {
-                                        Ok(sent) => sent?,
-                                        Err(error) => {
-                                            revoked = true;
-                                            return Err(error);
-                                        }
-                                    }
+                                    )?;
                                 }
                                 RawJsonRpcMessage::Request(_) => {
                                     return Err(backend_failure(
@@ -542,8 +556,8 @@ where
                     let stop = stopped(&cancellation, &task_connection, removed);
                     futures::pin_mut!(process, stop);
                     match future::select(stop, process).await {
-                        Either::Left((reason, _)) => (Err(reason), true),
-                        Either::Right((result, _)) => (result, false),
+                        Either::Left((reason, _)) => Err(reason),
+                        Either::Right((result, _)) => result,
                     }
                 };
                 client.rx.close();
@@ -558,19 +572,9 @@ where
                 } else {
                     Ok(())
                 };
-                (cleanup.and(result), stop_won || revoked)
+                cleanup.and(result)
             };
             cleanup_connection.wait_cleanup().await;
-            // `require_session_id` and `reject_session` record a rejection on
-            // the connection that the service and its tools share. It replaces
-            // the outcome of an operation that ran to its end, because a
-            // function tool cannot return an outer error itself: its `Err`
-            // becomes an `isError` result. The result of an interrupted
-            // operation stays as it is. Clear the slot either way.
-            let result = match cleanup_connection.take_rejection() {
-                Some(rejection) if !interrupted => Err(rejection),
-                _ => result,
-            };
             // Apply the ACP binding's version projection once for either
             // execution path, without changing opaque results of other methods.
             let result = result.and_then(|outcome| {
@@ -716,9 +720,6 @@ mod tests {
                 let cleaning = self.cleaning.lock().unwrap().take().unwrap();
                 let release = self.release.lock().unwrap().take().unwrap();
                 Box::pin(async move {
-                    // The removal below ends the operation, so this rejection
-                    // must not replace the removal error.
-                    let _rejection = context.reject_session("recorded before the removal");
                     context_tx.send(context.clone()).unwrap();
                     context.operation_cancellation().cancelled().await;
                     assert!(

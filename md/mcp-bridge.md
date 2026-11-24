@@ -143,59 +143,6 @@ and other instance data. Annotated native tools remain listed and callable.
 An external HTTP gateway's mirrored-header security policy is not transported;
 deployments relying on it must enforce that policy separately at the new endpoint.
 
-## Session and tool call attribution
-
-An HTTP MCP request does not say which ACP session it was sent for, or which
-tool call. By default the bridge sends every `mcp/message` request without
-`sessionId` and `toolCallId`. A provider that needs the session can reject
-such a request with `-32602`. The MCP client sees a binding failure (`-33002`)
-that [keeps the provider's reason](#lifecycle-and-failure-behavior).
-
-A host that runs the agent's tools can supply both values with a resolver:
-
-```rust,ignore
-use agent_client_protocol_polyfill::mcp_over_acp::{
-    McpHttpRequestAttribution, McpOverAcpPolyfill,
-};
-
-// Filled by the host when the agent starts a tool call.
-let tool_calls: Arc<Mutex<HashMap<String, McpHttpRequestAttribution>>> = Arc::default();
-
-let bridge = McpOverAcpPolyfill::http().with_attribution(move |request| {
-    // `request.params` includes the `_meta` the MCP client sent.
-    let attribution = request
-        .params
-        .as_ref()
-        .and_then(|params| params.get("_meta")?.get("example.com/toolUseId")?.as_str())
-        .and_then(|tool_use| tool_calls.lock().unwrap().get(tool_use).cloned());
-    std::future::ready(Ok(attribution))
-});
-```
-
-Build the value with `McpHttpRequestAttribution::new(session_id)`, and add
-`.tool_call_id(...)` when you know the tool call. Use the IDs the agent sends
-on `session/update` for that work, so a child session's request carries the
-child's ID.
-
-- The bridge calls the resolver once for each HTTP request that passes its
-  header, authentication, and body checks, before it forwards the request. The
-  resolver receives an `McpHttpRequestInfo` with the server ID, the inner
-  method, and the inner params.
-- The resolver returns a future, so it can wait for the host's own record of
-  a tool call.
-- `Ok(Some(attribution))` sets `sessionId` on that `mcp/message` request, and
-  `toolCallId` when the attribution has one. This applies to v1 and v2.
-- `Ok(None)` sends the request without either field. Return it for a request
-  you cannot match. Do not infer the session from the order or timing of
-  requests, or from the session that was active last.
-- `Err(_)` fails the HTTP request with status 500 and the JSON-RPC error
-  `-33002`. Nothing is forwarded. The bridge logs the error's code. It does
-  not log the error's message and data, and does not send them to the MCP
-  client.
-- The resolver only sees HTTP requests. A successor that supports native
-  MCP-over-ACP makes none. It sends `mcp/message` itself, with its own
-  attribution.
-
 ## Lifecycle and Failure Behavior
 
 Previously queued notifications precede the terminal outcome. Only a matching
@@ -230,7 +177,8 @@ admitted validation-error responses. Notification buffering and request/terminal
 payload sizes have adapter-local bounds. These policies do not change generic ACP
 frame queues or establish a bound on arbitrary application memory.
 
-The polyfill does not infer ACP session IDs. It names a session or tool call
-only when the host's resolver returns one. Native registration dispatch remains
+The polyfill does not infer ACP session IDs. It sends every `mcp/message`
+request without `sessionId` and `toolCallId`, because an MCP HTTP request does
+not say which session it belongs to. Native registration dispatch remains
 the authority for whether a server exists. The listener and signing secret live
 only for the containing ACP connection.

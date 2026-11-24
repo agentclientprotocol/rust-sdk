@@ -14,7 +14,10 @@ use agent_client_protocol::v2::ConnectionTo;
 use agent_client_protocol::{
     Agent, ByteStreams, Client, Conductor, ConnectTo, DynConnectTo, Error, JsonRpcRequest,
     JsonRpcResponse, NullRun, Proxy, Responder,
-    mcp_server::{McpConnectionTo, McpServer, McpServerConnect},
+    mcp_server::{
+        McpConnectionTo, McpOutcome, McpRequest, McpRequestContext, McpServer, McpServerConnect,
+        McpService,
+    },
     role,
     schema::ProtocolVersion,
     v2::schema as v2,
@@ -567,4 +570,170 @@ async fn v2_global_mcp_attachment_rejects_client_server_with_same_name() -> Resu
         received => panic!("only the non-colliding request should be forwarded: {received:?}"),
     }
     Ok(())
+}
+
+/// Counts the requests it runs and answers with the session each was sent
+/// for.
+struct CountingService {
+    runs: Arc<AtomicUsize>,
+}
+
+impl McpService<Conductor> for CountingService {
+    fn execute(
+        &self,
+        _request: McpRequest,
+        context: McpRequestContext<Conductor>,
+    ) -> futures::future::BoxFuture<'static, Result<McpOutcome, Error>> {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        let result = json!({"sessionId": context.session_id()});
+        Box::pin(async move { Ok(McpOutcome::Result(result)) })
+    }
+}
+
+/// A proxy whose globally attached MCP server needs the session of every
+/// request.
+struct GatedMcpProxy {
+    runs: Arc<AtomicUsize>,
+}
+
+impl ConnectTo<Conductor> for GatedMcpProxy {
+    async fn connect_to(self, conductor: impl ConnectTo<Proxy>) -> Result<(), Error> {
+        let service = CountingService { runs: self.runs };
+        let mcp_server = McpServer::new_service("gated-v2-server", service, NullRun)
+            .with_admission(|request| {
+                request.require_session_id()?;
+                Ok(())
+            });
+        Proxy
+            .v2()
+            .name("gated-v2-mcp-proxy")
+            .with_mcp_server(mcp_server)
+            .connect_to(conductor)
+            .await
+    }
+}
+
+type McpCallOutcome = Result<v2::MessageMcpResponse, Error>;
+
+/// An agent that calls the injected server twice for each new session:
+/// without a session, then for the session `child`.
+struct CallingAgent {
+    outcomes: mpsc::UnboundedSender<McpCallOutcome>,
+}
+
+impl ConnectTo<Client> for CallingAgent {
+    async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), Error> {
+        let outcomes = self.outcomes;
+        Agent
+            .v2()
+            .name("calling-v2-agent")
+            .on_receive_request(
+                async |request: v2::InitializeRequest,
+                       responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
+                       _connection: ConnectionTo<Client>| {
+                    responder.respond(v2::InitializeResponse::new(
+                        request.protocol_version,
+                        implementation("calling-v2-agent"),
+                    ))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |request: v2::NewSessionRequest,
+                            responder: Responder<
+                    v2::NewSessionResponse,
+                    agent_client_protocol::V2,
+                >,
+                            connection: ConnectionTo<Client>| {
+                    let [v2::McpServer::Acp(server)] = request.mcp_servers.as_slice() else {
+                        return Err(Error::internal_error().data("expected the injected server"));
+                    };
+                    let server_id = server.server_id.clone();
+                    let outcomes = outcomes.clone();
+                    let mcp_connection = connection.clone();
+                    connection.spawn(async move {
+                        let params = serde_json::Map::from_iter([(
+                            "_meta".to_owned(),
+                            json!({
+                                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                                "io.modelcontextprotocol/clientCapabilities": {}
+                            }),
+                        )]);
+                        for session_id in [None, Some(v2::SessionId::new("child"))] {
+                            let request = v2::MessageMcpRequest::new(
+                                server_id.clone(),
+                                "gated-call",
+                                "tools/call",
+                            )
+                            .params(params.clone())
+                            .session_id(session_id);
+                            let outcome = mcp_connection.send_request(request).block_task().await;
+                            outcomes
+                                .unbounded_send(outcome)
+                                .map_err(Error::into_internal_error)?;
+                        }
+                        Ok(())
+                    })?;
+                    responder.respond(v2::NewSessionResponse::new(v2::SessionId::new("root")))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_to(client)
+            .await
+    }
+}
+
+/// The admission check of a globally attached server decides before a request
+/// runs, like the check of a server attached to one session.
+#[tokio::test]
+async fn v2_global_mcp_admission_check_rejects_before_the_service_runs() -> Result<(), Error> {
+    let runs = Arc::new(AtomicUsize::new(0));
+    let (outcomes_tx, mut outcomes) = mpsc::unbounded();
+    let proxy = DynConnectTo::new(GatedMcpProxy { runs: runs.clone() });
+    let agent = DynConnectTo::new(CallingAgent {
+        outcomes: outcomes_tx,
+    });
+
+    run_with_conductor(proxy, agent, async move |connection| {
+        connection
+            .send_request(v2::InitializeRequest::new(
+                ProtocolVersion::V2,
+                implementation("v2-editor"),
+            ))
+            .block_task()
+            .await?;
+        connection
+            .send_request(v2::NewSessionRequest::new(PathBuf::from(
+                "/tmp/gated-v2-mcp",
+            )))
+            .block_task()
+            .await?;
+
+        let mut next = async || {
+            tokio::time::timeout(std::time::Duration::from_secs(5), outcomes.next())
+                .await
+                .expect("the MCP call should not hang")
+                .expect("the agent reports each call")
+        };
+        let rejected = next()
+            .await
+            .expect_err("a call without a session is rejected");
+        assert_eq!(
+            serde_json::to_value(rejected)?,
+            json!({
+                "code": -32602,
+                "message": "Invalid params",
+                "data": "this MCP server requires sessionId on mcp/message",
+            })
+        );
+
+        let v2::MessageMcpResponse::Result { result, .. } = next().await? else {
+            panic!("the attributed call should return a result")
+        };
+        assert_eq!(result, json!({"sessionId": "child"}));
+        // Two calls, and the service ran for the admitted one only.
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        Ok(())
+    })
+    .await
 }

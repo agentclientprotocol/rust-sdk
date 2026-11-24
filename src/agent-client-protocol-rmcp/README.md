@@ -40,43 +40,40 @@ enabled. To attach a native MCP server to draft ACP v2, also enable
 Native attachments lazily initialize one shared rmcp application service.
 Standalone connections still invoke the factory separately. Each native
 request owns its metadata, notifications, cancellation, and supervised cleanup.
-A function tool that needs the session of a request calls
-`require_session_id()` on its `McpConnectionTo`. For a request without a
-session, the call returns an error for the tool to return, and the agent
-receives Invalid params (`-32602`) instead of a tool result.
-
-A `ServerHandler` passed to `from_rmcp` reads the session and tool call of a
-request from a `McpRequestAttribution`. A `#[tool]` method takes it as a
-parameter:
+A `tool_fn` closure reads the session and tool call of a request from its
+`McpConnectionTo`. A `ServerHandler` passed to `from_rmcp` reads them from a
+`McpRequestAttribution`. A `#[tool]` method takes it as a parameter:
 
 ```rust,ignore
 #[tool(description = "Lists the notes of the session")]
-async fn list_notes(
-    &self,
-    attribution: McpRequestAttribution,
-) -> Result<CallToolResult, ErrorData> {
-    let session_id = attribution.require_session_id()?;
+async fn list_notes(&self, attribution: McpRequestAttribution) -> CallToolResult {
+    let session_id = attribution.session_id();
     // ...
 }
 ```
 
-A `ServerHandler` method you write yourself gets it from its `RequestContext`:
+A `ServerHandler` method you write yourself gets it from its `RequestContext`,
+with `McpRequestAttribution::of(&context)`. On a standalone connection the
+attribution has no session.
+
+A server that needs the session of a request rejects a request without one
+before any tool runs. Add an admission check with `McpServer::with_admission`,
+or give one tool its own rule: `McpTool::admit`, or `tool_admission` on the
+builder for a `tool_fn` or `tool_fn_mut` tool.
 
 ```rust,ignore
-let attribution = McpRequestAttribution::of(&context);
-let session_id = attribution.require_session_id()?;
+let server = McpServer::builder("notes")
+    .tool_fn("add_note", "Adds a note", add_note, tool_fn!())
+    .tool_admission("add_note", |request| {
+        request.require_session_id()?;
+        Ok(())
+    })?
+    .build();
 ```
 
-For a request without a session, `require_session_id()` returns an rmcp
-`ErrorData` for the handler to return, and the agent receives Invalid params
-(`-32602`). Use it in `list_tools` or `discover` when a server needs the
-session before any tool runs. `McpServerBuilder` answers those requests
-itself. On a standalone connection the attribution has no session, and the MCP
-client receives the error the handler returns.
-
-A handler that needs the host ACP connection finds it in rmcp's request
-extensions, with `context.extensions.get::<McpConnectionTo<Agent>>()`. Name the
-role the server is attached to.
+The agent receives Invalid params (`-32602`) for a rejected request. The SDK
+does not know the `#[tool]` methods of a `from_rmcp` handler, so their rules go
+in the server's check, by `request.tool_name()`.
 
 Run the direct ACP example with:
 

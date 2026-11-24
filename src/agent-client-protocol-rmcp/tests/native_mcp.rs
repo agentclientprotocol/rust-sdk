@@ -2,9 +2,9 @@
 #![cfg(all(feature = "rmcp_3", feature = "unstable_mcp_over_acp"))]
 
 use agent_client_protocol::{
-    Agent, Channel, Client, ConnectionTo, Error, RawJsonRpcMessage, RunWithConnectionTo,
+    Agent, Channel, Client, ConnectionTo, Error, RawJsonRpcMessage, Role, RunWithConnectionTo,
     TransportFrame, UntypedMessage,
-    mcp_server::{McpConnectionTo, McpServer},
+    mcp_server::{McpAdmission, McpConnectionTo, McpRejection, McpServer, McpTool},
     role::mcp,
     schema::ProtocolVersion,
     v2::schema as v2,
@@ -467,59 +467,18 @@ async fn host_v2<Run: RunWithConnectionTo<Agent> + 'static>(server: McpServer<Ag
     (peer, server, stop, task)
 }
 
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-struct NoArgs {}
-
-/// Tools that need the session of the request that calls them.
-fn session_tools() -> McpServer<Agent, impl RunWithConnectionTo<Agent> + 'static> {
-    McpServer::builder("sessions")
-        .tool_fn(
-            "require",
-            "Returns the session of the request",
-            async |_args: NoArgs, cx: McpConnectionTo<Agent>| {
-                Ok::<_, Error>(cx.require_session_id()?.to_string())
-            },
-            agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
-        )
-        .tool_fn_mut(
-            "require_mut",
-            "Returns the session of the request",
-            async |_args: NoArgs, cx: McpConnectionTo<Agent>| {
-                Ok::<_, Error>(cx.require_session_id()?.to_string())
-            },
-            agent_client_protocol_rmcp::rmcp_3::tool_fn_mut!(),
-        )
-        .tool_fn(
-            "reject",
-            "Refuses the session of the request",
-            async |_args: NoArgs, cx: McpConnectionTo<Agent>| -> Result<String, Error> {
-                Err(cx.reject_session("the session is not active"))
-            },
-            agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
-        )
-        .tool_fn(
-            "fail",
-            "Fails without rejecting the request",
-            async |_args: NoArgs, _cx: McpConnectionTo<Agent>| -> Result<String, Error> {
-                Err(Error::invalid_params().data("not recorded as a rejection"))
-            },
-            agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
-        )
-        .build()
-}
-
 /// Sends `method` in an `mcp/message` request that carries `attribution`, and
 /// returns the response.
 async fn attributed(
     peer: &mut Channel,
     server: &Value,
-    id: &str,
     method: &str,
     inner: Value,
     attribution: Value,
 ) -> Value {
     let mut envelope = json!({
-        "serverId":server,"requestId":id,"method":method,"params":params(inner, id)
+        "serverId":server,"requestId":"request","method":method,
+        "params":params(inner, "request")
     });
     envelope
         .as_object_mut()
@@ -527,67 +486,190 @@ async fn attributed(
         .extend(attribution.as_object().unwrap().clone());
     send(
         peer,
-        json!({"jsonrpc":"2.0","id":id,"method":"mcp/message","params":envelope}),
+        json!({"jsonrpc":"2.0","id":"request","method":"mcp/message","params":envelope}),
     );
-    response(peer, id).await
+    response(peer, "request").await
 }
 
 /// Calls `tool` in an `mcp/message` request that carries `attribution`, and
 /// returns the response.
-async fn call_tool(
-    peer: &mut Channel,
-    server: &Value,
-    id: &str,
-    tool: &str,
-    attribution: Value,
-) -> Value {
+async fn call_tool(peer: &mut Channel, server: &Value, tool: &str, attribution: Value) -> Value {
     let inner = json!({"name":tool,"arguments":{}});
-    attributed(peer, server, id, "tools/call", inner, attribution).await
+    attributed(peer, server, "tools/call", inner, attribution).await
 }
 
-async fn tools_reject_requests_for_their_session((mut peer, server, stop, task): Host) {
-    let child = json!({"sessionId":"child"});
-    for tool in ["require", "require_mut"] {
-        // Without a session the request is rejected. The tool's own `Err`
-        // would only be an `isError` tool result.
-        let missing = call_tool(&mut peer, &server, "missing", tool, json!({})).await;
-        assert_eq!(
-            missing["error"],
-            json!({
-                "code":-32602,"message":"Invalid params",
-                "data":"this MCP server requires sessionId on mcp/message"
-            }),
-            "{tool}"
-        );
-        assert!(missing.get("result").is_none(), "{tool}: {missing}");
-        // The same tool, and the runner of a `tool_fn_mut`, still serve the
-        // next request.
-        let ran = call_tool(&mut peer, &server, "present", tool, child.clone()).await;
-        assert_eq!(
-            ran["result"]["result"]["content"][0]["text"], "\"child\"",
-            "{tool}: {ran}"
-        );
-        assert_eq!(ran["result"]["result"]["isError"], false, "{tool}: {ran}");
+/// Sends `method` to a standalone server and returns the result, or the
+/// error the MCP client receives.
+async fn standalone_request(
+    connection: &ConnectionTo<mcp::Server>,
+    method: &str,
+    inner: Value,
+) -> Result<Value, Value> {
+    let request = UntypedMessage::new(method, params(inner, method)).unwrap();
+    connection
+        .send_request(request)
+        .block_task()
+        .await
+        .map_err(|error| serde_json::to_value(error).unwrap())
+}
+
+/// Whether `response` is the outer error Invalid params with `reason`.
+#[track_caller]
+fn assert_rejected(response: &Value, reason: &str) {
+    assert_eq!(
+        response.get("error"),
+        Some(&json!({"code":-32602,"message":"Invalid params","data":reason})),
+        "{response}"
+    );
+    assert_eq!(response.get("result"), None, "{response}");
+}
+
+const SESSION_REQUIRED: &str = "this MCP server requires sessionId on mcp/message";
+
+/// The check of a tool that needs the session of a call.
+fn require_session(request: &McpAdmission<'_>) -> Result<(), McpRejection> {
+    request.require_session_id()?;
+    Ok(())
+}
+
+/// The text of the tool result in `response`.
+fn tool_text(response: &Value) -> &Value {
+    &response["result"]["result"]["content"][0]["text"]
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct NoArgs {}
+
+/// A tool that states its admission rule next to its definition. It counts
+/// its runs and returns the session it ran for.
+struct Notes {
+    runs: Arc<AtomicUsize>,
+}
+
+impl<R: Role> McpTool<R> for Notes {
+    type Input = NoArgs;
+    type Output = String;
+
+    fn name(&self) -> String {
+        "notes".into()
     }
 
-    let refused = call_tool(&mut peer, &server, "refused", "reject", child.clone()).await;
-    assert_eq!(
-        refused["error"],
-        json!({
-            "code":-32602,"message":"Invalid params",
-            "data":"sessionId rejected: the session is not active"
+    fn description(&self) -> String {
+        "Returns the session whose notes it lists".into()
+    }
+
+    fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection> {
+        require_session(request)
+    }
+
+    fn call_tool(
+        &self,
+        _input: NoArgs,
+        cx: McpConnectionTo<R>,
+    ) -> impl Future<Output = Result<String, Error>> + Send {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        let session = cx.session_id().map(ToString::to_string);
+        std::future::ready(Ok(session.unwrap_or_default()))
+    }
+}
+
+/// A builder server with one tool for each way to state a tool's rule, and a
+/// tool without one. Every tool counts its runs in `runs`.
+fn gated_tools<R: Role>(
+    runs: Arc<AtomicUsize>,
+) -> McpServer<R, impl RunWithConnectionTo<R> + 'static> {
+    let counted = |runs: &Arc<AtomicUsize>| {
+        let runs = runs.clone();
+        async move |_args: NoArgs, _cx: McpConnectionTo<R>| {
+            runs.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Error>("ran".to_owned())
+        }
+    };
+    McpServer::builder("gated")
+        .tool(Notes { runs: runs.clone() })
+        .tool_fn(
+            "add_note",
+            "Has a rule added by name",
+            counted(&runs),
+            agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
+        )
+        .tool_fn_mut(
+            "count_notes",
+            "Has a rule added by name",
+            counted(&runs),
+            agent_client_protocol_rmcp::rmcp_3::tool_fn_mut!(),
+        )
+        .tool_fn(
+            "help",
+            "Has no rule",
+            counted(&runs),
+            agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
+        )
+        .tool_admission("add_note", require_session)
+        .unwrap()
+        .tool_admission("count_notes", require_session)
+        .unwrap()
+        // A second check for one tool runs after the first.
+        .tool_admission("add_note", |request| match request.session_id() {
+            Some(session_id) if session_id.0.as_ref() == "other" => {
+                Err(McpRejection::session_rejected("not a session with notes"))
+            }
+            _ => Ok(()),
         })
+        .unwrap()
+        .build()
+}
+
+async fn tool_rules_decide_before_the_tool_runs(
+    (mut peer, server, stop, task): Host,
+    runs: Arc<AtomicUsize>,
+) {
+    let child = json!({"sessionId":"child"});
+
+    // Each tool with a rule rejects a call without a session, and does not
+    // run for it.
+    for tool in ["notes", "add_note", "count_notes"] {
+        let missing = call_tool(&mut peer, &server, tool, json!({})).await;
+        assert_rejected(&missing, SESSION_REQUIRED);
+    }
+    assert_eq!(runs.load(Ordering::SeqCst), 0);
+
+    // With a session each of them runs, also after a rejected call.
+    let notes = call_tool(&mut peer, &server, "notes", child.clone()).await;
+    assert_eq!(tool_text(&notes), "\"child\"", "{notes}");
+    for tool in ["add_note", "count_notes"] {
+        let ran = call_tool(&mut peer, &server, tool, child.clone()).await;
+        assert_eq!(tool_text(&ran), "\"ran\"", "{tool}: {ran}");
+    }
+    assert_eq!(runs.load(Ordering::SeqCst), 3);
+
+    // The second check added for `add_note` refuses one session.
+    let other = json!({"sessionId":"other"});
+    let refused = call_tool(&mut peer, &server, "add_note", other.clone()).await;
+    assert_rejected(&refused, "sessionId rejected: not a session with notes");
+    // The server's own check runs before the rule of the tool.
+    let blocked = json!({"sessionId":"blocked"});
+    let refused = call_tool(&mut peer, &server, "notes", blocked).await;
+    assert_rejected(&refused, "sessionId rejected: blocked by the server");
+    assert_eq!(runs.load(Ordering::SeqCst), 3);
+
+    // A tool without a rule, and every other method, need no session.
+    let help = call_tool(&mut peer, &server, "help", json!({})).await;
+    assert_eq!(tool_text(&help), "\"ran\"", "{help}");
+    let listed = attributed(&mut peer, &server, "tools/list", json!({}), json!({})).await;
+    assert_eq!(
+        listed["result"]["result"]["tools"].as_array().map(Vec::len),
+        Some(4),
+        "{listed}"
     );
 
-    // An error that is not recorded as a rejection stays a tool result.
-    let failed = call_tool(&mut peer, &server, "failed", "fail", child).await;
-    assert!(failed.get("error").is_none(), "{failed}");
-    assert_eq!(failed["result"]["result"]["isError"], true, "{failed}");
-    assert!(
-        failed["result"]["result"]["content"][0]["text"]
-            .as_str()
-            .is_some_and(|text| text.contains("not recorded as a rejection")),
-        "{failed}"
+    // A tool that is not registered has no rule. The server reports it as it
+    // does without admission checks.
+    let unknown = call_tool(&mut peer, &server, "missing", json!({})).await;
+    assert_eq!(unknown.get("error"), None, "{unknown}");
+    assert_eq!(
+        unknown["result"]["error"],
+        json!({"code":-32602,"message":"tool `missing` not found"})
     );
 
     let _sent = stop.send(());
@@ -595,64 +677,83 @@ async fn tools_reject_requests_for_their_session((mut peer, server, stop, task):
 }
 
 #[tokio::test]
-async fn function_tools_reject_requests_for_their_session() {
+async fn builder_tools_state_their_own_admission_rules() {
     tokio::time::timeout(TIMEOUT, async {
-        tools_reject_requests_for_their_session(host(session_tools()).await).await;
-        tools_reject_requests_for_their_session(host_v2(session_tools()).await).await;
+        let server = |runs: &Arc<AtomicUsize>| {
+            gated_tools::<Agent>(runs.clone()).with_admission(|request| {
+                match request.session_id() {
+                    Some(session_id) if session_id.0.as_ref() == "blocked" => {
+                        Err(McpRejection::session_rejected("blocked by the server"))
+                    }
+                    _ => Ok(()),
+                }
+            })
+        };
+        let runs = Arc::new(AtomicUsize::new(0));
+        tool_rules_decide_before_the_tool_runs(host(server(&runs)).await, runs).await;
+        let runs = Arc::new(AtomicUsize::new(0));
+        tool_rules_decide_before_the_tool_runs(host_v2(server(&runs)).await, runs).await;
     })
     .await
-    .expect("session rejection timed out");
+    .expect("builder admission test timed out");
 }
 
-/// An rmcp handler that reads the session and tool call of a request, and
-/// needs a session for discovery and to list or call its tools.
-struct SessionHandler;
+/// A disabled tool has no rule either. The server reports the call as it
+/// does without admission checks.
+#[tokio::test]
+async fn disabled_tool_gets_no_admission_rule() {
+    tokio::time::timeout(TIMEOUT, async {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let server = McpServer::<Agent>::builder("gated")
+            .tool(Notes { runs: runs.clone() })
+            .disable_tool("notes")
+            .unwrap()
+            .build();
+        let (mut peer, server, stop, task) = host(server).await;
+        let disabled = call_tool(&mut peer, &server, "notes", json!({})).await;
+        assert_eq!(disabled.get("error"), None, "{disabled}");
+        assert_eq!(
+            disabled["result"]["error"],
+            json!({"code":-32602,"message":"tool `notes` not found"})
+        );
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+        let _sent = stop.send(());
+        task.await.unwrap().unwrap();
+    })
+    .await
+    .expect("disabled tool test timed out");
+}
+
+/// An rmcp handler that counts the requests it runs, and reads the session
+/// and tool call of a request.
+struct SessionHandler {
+    runs: Arc<AtomicUsize>,
+}
 
 impl SessionHandler {
-    fn discovery(&self, context: &RequestContext<RoleServer>) -> Result<DiscoverResult, ErrorData> {
-        McpRequestAttribution::of(context).require_session_id()?;
-        Ok(DiscoverResult::from_server_info(
+    fn discovery(&self) -> DiscoverResult {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        DiscoverResult::from_server_info(
             self.supported_protocol_versions().into_owned(),
             self.get_info(),
-        ))
+        )
     }
 
-    fn tools(context: &RequestContext<RoleServer>) -> Result<ListToolsResult, ErrorData> {
-        McpRequestAttribution::of(context).require_session_id()?;
-        Ok(ListToolsResult::with_all_items(Vec::new())
+    fn tools(&self) -> ListToolsResult {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        ListToolsResult::with_all_items(Vec::new())
             .with_ttl_ms(0)
-            .with_cache_scope(CacheScope::Private))
+            .with_cache_scope(CacheScope::Private)
     }
 
-    fn tool(
-        request: &CallToolRequestParams,
-        context: &RequestContext<RoleServer>,
-    ) -> Result<CallToolResponse, ErrorData> {
+    fn tool(&self, context: &RequestContext<RoleServer>) -> CallToolResponse {
+        self.runs.fetch_add(1, Ordering::SeqCst);
         let attribution = McpRequestAttribution::of(context);
-        match request.name.as_ref() {
-            "attribution" => Ok(CallToolResult::structured(json!({
-                "sessionId":attribution.session_id(),
-                "toolCallId":attribution.tool_call_id(),
-            }))
-            .into()),
-            "require" => {
-                let session_id = attribution.require_session_id()?;
-                Ok(CallToolResult::structured(json!({"sessionId":session_id})).into())
-            }
-            "reject" => Err(attribution.reject_session("the session is not active")),
-            // A handler that needs the host connection names its role.
-            "connection" => {
-                let agent = context.extensions.get::<McpConnectionTo<Agent>>();
-                let mcp_client = context.extensions.get::<McpConnectionTo<mcp::Client>>();
-                Ok(CallToolResult::structured(json!({
-                    "agent":agent.is_some(),
-                    "mcpClient":mcp_client.is_some(),
-                    "sessionId":agent.and_then(McpConnectionTo::session_id),
-                }))
-                .into())
-            }
-            _ => Err(ErrorData::invalid_params("unknown tool", None)),
-        }
+        CallToolResult::structured(json!({
+            "sessionId":attribution.session_id(),
+            "toolCallId":attribution.tool_call_id(),
+        }))
+        .into()
     }
 }
 
@@ -662,24 +763,97 @@ impl ServerHandler for SessionHandler {
     }
     fn discover(
         &self,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<DiscoverResult, ErrorData>> + Send {
-        std::future::ready(self.discovery(&context))
+        std::future::ready(Ok(self.discovery()))
     }
     fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send {
-        std::future::ready(Self::tools(&context))
+        std::future::ready(Ok(self.tools()))
     }
     fn call_tool(
         &self,
-        request: CallToolRequestParams,
+        _request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CallToolResponse, ErrorData>> + Send {
-        std::future::ready(Self::tool(&request, &context))
+        std::future::ready(Ok(self.tool(&context)))
     }
+}
+
+/// A `from_rmcp` server whose check needs a session for discovery, for
+/// `tools/list`, and for the tool `notes`. The SDK does not know the
+/// handler's tools, so the rule for one tool is in the server's check.
+fn handler_server<R: Role>(runs: &Arc<AtomicUsize>) -> McpServer<R> {
+    let runs = runs.clone();
+    McpServer::from_rmcp("sessions", move || SessionHandler { runs: runs.clone() }).with_admission(
+        |request| match (request.method(), request.tool_name()) {
+            ("tools/call", Some("notes")) | ("tools/list" | "server/discover", _) => {
+                require_session(request)
+            }
+            _ => Ok(()),
+        },
+    )
+}
+
+async fn handler_runs_only_admitted_requests(
+    (mut peer, server, stop, task): Host,
+    runs: Arc<AtomicUsize>,
+) {
+    let structured = |response: &Value| response["result"]["result"]["structuredContent"].clone();
+    let notes = json!({"name":"notes","arguments":{}});
+    let requests = [
+        ("tools/call", notes),
+        ("tools/list", json!({})),
+        ("server/discover", json!({})),
+    ];
+
+    for (method, inner) in &requests {
+        let missing = attributed(&mut peer, &server, method, inner.clone(), json!({})).await;
+        assert_rejected(&missing, SESSION_REQUIRED);
+    }
+    assert_eq!(runs.load(Ordering::SeqCst), 0);
+
+    let attribution = json!({"sessionId":"child","toolCallId":"call_1"});
+    for (method, inner) in &requests {
+        let present = attributed(
+            &mut peer,
+            &server,
+            method,
+            inner.clone(),
+            attribution.clone(),
+        );
+        let present = present.await;
+        assert_eq!(present.get("error"), None, "{method}: {present}");
+    }
+    assert_eq!(runs.load(Ordering::SeqCst), 3);
+
+    // The handler reads the attribution of a request it runs.
+    let seen = call_tool(&mut peer, &server, "notes", attribution.clone()).await;
+    assert_eq!(structured(&seen), attribution);
+    // A tool the check has no rule for runs without a session.
+    let unattributed = call_tool(&mut peer, &server, "help", json!({})).await;
+    assert_eq!(
+        structured(&unattributed),
+        json!({"sessionId":null,"toolCallId":null})
+    );
+
+    let _sent = stop.send(());
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn rmcp_handler_runs_only_admitted_requests_and_reads_their_attribution() {
+    tokio::time::timeout(TIMEOUT, async {
+        let runs = Arc::new(AtomicUsize::new(0));
+        handler_runs_only_admitted_requests(host(handler_server(&runs)).await, runs).await;
+        let runs = Arc::new(AtomicUsize::new(0));
+        handler_runs_only_admitted_requests(host_v2(handler_server(&runs)).await, runs).await;
+    })
+    .await
+    .expect("rmcp handler admission test timed out");
 }
 
 /// An rmcp handler whose `#[tool]` methods take the attribution as a
@@ -691,34 +865,20 @@ struct ToolHandler {
 #[tool_router]
 impl ToolHandler {
     #[tool(description = "Returns the session and tool call of the request")]
-    fn read(attribution: McpRequestAttribution) -> CallToolResult {
+    async fn read(&self, attribution: McpRequestAttribution) -> CallToolResult {
         CallToolResult::structured(json!({
             "sessionId":attribution.session_id(),
             "toolCallId":attribution.tool_call_id(),
         }))
     }
 
-    #[tool(description = "Returns the session of the request")]
-    async fn require(
-        &self,
-        attribution: McpRequestAttribution,
-    ) -> Result<CallToolResult, ErrorData> {
-        let session_id = attribution.require_session_id()?;
-        Ok(CallToolResult::structured(json!({"sessionId":session_id})))
-    }
-
-    #[tool(description = "Refuses the session of the request")]
-    fn reject(attribution: McpRequestAttribution) -> ErrorData {
-        attribution.reject_session("the session is not active")
-    }
-
     /// rmcp's own extractor finds the attribution only where it is attached.
-    #[tool(description = "Returns the session of the request")]
-    fn from_extension(
-        Extension(attribution): Extension<McpRequestAttribution>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let session_id = attribution.require_session_id()?;
-        Ok(CallToolResult::structured(json!({"sessionId":session_id})))
+    #[tool(description = "Returns the session and tool call of the request")]
+    fn from_extension(Extension(attribution): Extension<McpRequestAttribution>) -> CallToolResult {
+        CallToolResult::structured(json!({
+            "sessionId":attribution.session_id(),
+            "toolCallId":attribution.tool_call_id(),
+        }))
     }
 }
 
@@ -736,129 +896,25 @@ impl ServerHandler for ToolHandler {
     }
 }
 
-fn tool_server<R: agent_client_protocol::Role>() -> McpServer<R> {
+fn tool_server<R: Role>() -> McpServer<R> {
     McpServer::from_rmcp("tools", || ToolHandler {
         tool_router: ToolHandler::tool_router(),
     })
 }
 
-fn missing_session() -> Value {
-    json!({
-        "code":-32602,"message":"Invalid params",
-        "data":"this MCP server requires sessionId on mcp/message"
-    })
-}
-
-async fn handler_reads_attribution_and_rejects((mut peer, server, stop, task): Host) {
-    let structured = |response: &Value| response["result"]["result"]["structuredContent"].clone();
-    let child = json!({"sessionId":"child"});
-
-    let attribution = json!({"sessionId":"child","toolCallId":"call_1"});
-    let seen = call_tool(
-        &mut peer,
-        &server,
-        "seen",
-        "attribution",
-        attribution.clone(),
-    )
-    .await;
-    assert_eq!(structured(&seen), attribution);
-    let unattributed = call_tool(&mut peer, &server, "none", "attribution", json!({})).await;
-    assert_eq!(
-        structured(&unattributed),
-        json!({"sessionId":null,"toolCallId":null})
-    );
-
-    // Without a session, `call_tool`, `list_tools` and `discover` reject the
-    // request. The handler's own `Err` would only be an inner MCP error.
-    let require = json!({"name":"require","arguments":{}});
-    for (method, inner, expected) in [
-        ("tools/call", require, json!({"structuredContent":child})),
-        ("tools/list", json!({}), json!({"tools":[]})),
-        (
-            "server/discover",
-            json!({}),
-            json!({"supportedVersions":["2026-07-28"]}),
-        ),
-    ] {
-        let missing = attributed(&mut peer, &server, "none", method, inner.clone(), json!({}));
-        let missing = missing.await;
-        assert_eq!(missing["error"], missing_session(), "{method}");
-        assert!(missing.get("result").is_none(), "{method}: {missing}");
-
-        let present = attributed(&mut peer, &server, "some", method, inner, child.clone());
-        let present = present.await;
-        assert!(present.get("error").is_none(), "{method}: {present}");
-        for (key, value) in expected.as_object().unwrap() {
-            assert_eq!(
-                &present["result"]["result"][key], value,
-                "{method}: {present}"
-            );
-        }
-    }
-
-    let refused = call_tool(&mut peer, &server, "refused", "reject", child.clone()).await;
-    assert_eq!(
-        refused["error"],
-        json!({
-            "code":-32602,"message":"Invalid params",
-            "data":"sessionId rejected: the session is not active"
-        })
-    );
-
-    // The handler also finds the host connection, under the role the server
-    // was attached to and no other.
-    let connection = call_tool(&mut peer, &server, "connection", "connection", child).await;
-    assert_eq!(
-        structured(&connection),
-        json!({"agent":true,"mcpClient":false,"sessionId":"child"})
-    );
-
-    let _sent = stop.send(());
-    task.await.unwrap().unwrap();
-}
-
-#[tokio::test]
-async fn rmcp_handler_reads_attribution_and_rejects_requests_for_their_session() {
-    tokio::time::timeout(TIMEOUT, async {
-        let server = || McpServer::<Agent>::from_rmcp("sessions", || SessionHandler);
-        handler_reads_attribution_and_rejects(host(server()).await).await;
-        handler_reads_attribution_and_rejects(host_v2(server()).await).await;
-    })
-    .await
-    .expect("rmcp handler session test timed out");
-}
-
 async fn tool_methods_take_the_attribution((mut peer, server, stop, task): Host) {
     let structured = |response: &Value| response["result"]["result"]["structuredContent"].clone();
-    let child = json!({"sessionId":"child"});
-
     let attribution = json!({"sessionId":"child","toolCallId":"call_1"});
-    let seen = call_tool(&mut peer, &server, "seen", "read", attribution.clone()).await;
-    assert_eq!(structured(&seen), attribution);
-    let unattributed = call_tool(&mut peer, &server, "none", "read", json!({})).await;
-    assert_eq!(
-        structured(&unattributed),
-        json!({"sessionId":null,"toolCallId":null})
-    );
-
-    for tool in ["require", "from_extension"] {
-        let missing = call_tool(&mut peer, &server, "none", tool, json!({})).await;
-        assert_eq!(missing["error"], missing_session(), "{tool}");
-        assert!(missing.get("result").is_none(), "{tool}: {missing}");
-
-        let present = call_tool(&mut peer, &server, "some", tool, child.clone()).await;
-        assert_eq!(structured(&present), child, "{tool}: {present}");
+    for tool in ["read", "from_extension"] {
+        let seen = call_tool(&mut peer, &server, tool, attribution.clone()).await;
+        assert_eq!(structured(&seen), attribution, "{tool}");
+        let unattributed = call_tool(&mut peer, &server, tool, json!({})).await;
+        assert_eq!(
+            structured(&unattributed),
+            json!({"sessionId":null,"toolCallId":null}),
+            "{tool}"
+        );
     }
-
-    let refused = call_tool(&mut peer, &server, "refused", "reject", child).await;
-    assert_eq!(
-        refused["error"],
-        json!({
-            "code":-32602,"message":"Invalid params",
-            "data":"sessionId rejected: the session is not active"
-        })
-    );
 
     let _sent = stop.send(());
     task.await.unwrap().unwrap();
@@ -874,73 +930,51 @@ async fn rmcp_tool_methods_take_the_attribution_as_a_parameter() {
     .expect("rmcp tool method test timed out");
 }
 
-/// Sends `method` to a standalone `server` and returns the result or the
-/// error the MCP client receives.
-async fn standalone_request(
-    connection: &ConnectionTo<mcp::Server>,
-    method: &str,
-    inner: Value,
-) -> Result<Value, Value> {
-    let request = UntypedMessage::new(method, params(inner, method)).unwrap();
-    connection
-        .send_request(request)
-        .block_task()
-        .await
-        .map_err(|error| serde_json::to_value(error).unwrap())
-}
-
-/// A standalone connection has no ACP session and no `mcp/message` request,
-/// so the same handler reads no attribution and its errors are ordinary MCP
-/// errors.
+/// A standalone connection has no `mcp/message` request, so no admission
+/// check runs and no attribution is attached. Tools and handlers run, and
+/// read no session.
 #[tokio::test]
-async fn standalone_rmcp_handler_reads_no_attribution() -> Result<(), Error> {
+async fn standalone_requests_run_without_admission_checks() -> Result<(), Error> {
     tokio::time::timeout(TIMEOUT, async {
-        let server = McpServer::<mcp::Client>::from_rmcp("sessions", || SessionHandler);
+        // The rules of builder tools are not evaluated.
+        let runs = Arc::new(AtomicUsize::new(0));
         mcp::Client
             .builder()
-            .connect_with(server, async |connection| {
-                let call = async |tool: &str| {
-                    let inner = json!({"name":tool,"arguments":{}});
-                    standalone_request(&connection, "tools/call", inner).await
-                };
+            .connect_with(
+                gated_tools::<mcp::Client>(runs.clone()),
+                async |connection| {
+                    for (tool, text) in [("notes", "\"\""), ("add_note", "\"ran\"")] {
+                        let inner = json!({"name":tool,"arguments":{}});
+                        let result = standalone_request(&connection, "tools/call", inner).await;
+                        assert_eq!(result.unwrap()["content"][0]["text"], text, "{tool}");
+                    }
+                    Ok(())
+                },
+            )
+            .await?;
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+
+        // Nor is the check of a `from_rmcp` server, and its handler reads no
+        // attribution.
+        let runs = Arc::new(AtomicUsize::new(0));
+        mcp::Client
+            .builder()
+            .connect_with(handler_server::<mcp::Client>(&runs), async |connection| {
+                let notes = json!({"name":"notes","arguments":{}});
+                let result = standalone_request(&connection, "tools/call", notes).await;
                 assert_eq!(
-                    call("attribution").await.unwrap()["structuredContent"],
+                    result.unwrap()["structuredContent"],
                     json!({"sessionId":null,"toolCallId":null})
                 );
-                assert_eq!(
-                    call("connection").await.unwrap()["structuredContent"],
-                    json!({"agent":false,"mcpClient":false,"sessionId":null})
-                );
-
-                let no_session = json!({
-                    "code":-32602,"message":"a standalone MCP connection has no ACP session"
-                });
-                assert_eq!(call("require").await.unwrap_err(), no_session);
-                for method in ["tools/list", "server/discover"] {
-                    let error = standalone_request(&connection, method, json!({})).await;
-                    assert_eq!(error.unwrap_err(), no_session, "{method}");
-                }
-                assert_eq!(
-                    call("reject").await.unwrap_err(),
-                    json!({
-                        "code":-32602,
-                        "message":"sessionId rejected: the session is not active"
-                    })
-                );
+                let listed = standalone_request(&connection, "tools/list", json!({})).await;
+                assert_eq!(listed.unwrap()["tools"], json!([]));
                 Ok(())
             })
-            .await
-    })
-    .await
-    .expect("standalone rmcp handler test timed out")
-}
+            .await?;
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
 
-/// On a standalone connection a `#[tool]` parameter is an attribution without
-/// a session. rmcp's `Extension` extractor fails there, because nothing is
-/// attached.
-#[tokio::test]
-async fn standalone_tool_methods_take_an_attribution_without_a_session() -> Result<(), Error> {
-    tokio::time::timeout(TIMEOUT, async {
+        // A `#[tool]` parameter is an attribution without a session. rmcp's
+        // `Extension` extractor fails, because nothing is attached.
         mcp::Client
             .builder()
             .connect_with(tool_server::<mcp::Client>(), async |connection| {
@@ -951,20 +985,6 @@ async fn standalone_tool_methods_take_an_attribution_without_a_session() -> Resu
                 assert_eq!(
                     call("read").await.unwrap()["structuredContent"],
                     json!({"sessionId":null,"toolCallId":null})
-                );
-                assert_eq!(
-                    call("require").await.unwrap_err(),
-                    json!({
-                        "code":-32602,
-                        "message":"a standalone MCP connection has no ACP session"
-                    })
-                );
-                assert_eq!(
-                    call("reject").await.unwrap_err(),
-                    json!({
-                        "code":-32602,
-                        "message":"sessionId rejected: the session is not active"
-                    })
                 );
                 let error = call("from_extension").await.unwrap_err();
                 assert_eq!(error["code"], -32602, "{error}");
@@ -979,5 +999,5 @@ async fn standalone_tool_methods_take_an_attribution_without_a_session() -> Resu
             .await
     })
     .await
-    .expect("standalone tool method test timed out")
+    .expect("standalone admission test timed out")
 }

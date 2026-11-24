@@ -26,9 +26,8 @@ use tokio::{
     net::TcpListener,
     sync::{Semaphore, mpsc as tokio_mpsc, oneshot},
 };
-use tracing::warn;
 
-use super::{BridgeMessage, McpHttpRequestInfo, attribution::AttributionResolver};
+use super::BridgeMessage;
 
 const VERSION: &str = "2026-07-28";
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
@@ -45,7 +44,6 @@ pub(super) struct BridgeState {
     secret: [u8; 32],
     admission: Arc<Semaphore>,
     tx: mpsc::Sender<BridgeMessage>,
-    attribution: Option<AttributionResolver>,
 }
 
 pub(super) async fn run_http_listener(
@@ -61,10 +59,7 @@ pub(super) async fn run_http_listener(
 }
 
 impl BridgeState {
-    pub(super) fn new(
-        tx: mpsc::Sender<BridgeMessage>,
-        attribution: Option<AttributionResolver>,
-    ) -> Arc<Self> {
+    pub(super) fn new(tx: mpsc::Sender<BridgeMessage>) -> Arc<Self> {
         Arc::new(Self {
             secret: {
                 let mut secret = [0; 32];
@@ -74,7 +69,6 @@ impl BridgeState {
             },
             admission: Arc::new(Semaphore::new(super::MAX_ACTIVE_REQUESTS)),
             tx,
-            attribution,
         })
     }
 
@@ -539,35 +533,6 @@ async fn handle_admitted_request(
     if method == "initialize" || method.starts_with("notifications/") {
         return error(StatusCode::NOT_FOUND, id, -32601, "Method not found");
     }
-    // An HTTP request does not name its ACP session or tool call. Only the
-    // host's resolver can, so without one the request carries neither.
-    let attribution = match &state.attribution {
-        None => None,
-        Some(resolver) => {
-            let request = McpHttpRequestInfo {
-                server_id: server_id.clone(),
-                method: method.into(),
-                params: params.clone(),
-            };
-            match resolver.resolve(request).await {
-                Ok(attribution) => attribution,
-                Err(failure) => {
-                    // The message and data can quote the request, so log the
-                    // code only.
-                    warn!(
-                        code = failure.code.value(),
-                        "MCP attribution resolver failed; the request was not forwarded"
-                    );
-                    return error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        id,
-                        -33002,
-                        "MCP attribution resolver failed",
-                    );
-                }
-            }
-        }
-    };
     let id_for_bridge_error = id.clone();
     let (notification_tx, mut response_rx) = tokio_mpsc::channel(super::MAX_QUEUED_NOTIFICATIONS);
     let response_tx = super::StreamSender {
@@ -581,7 +546,6 @@ async fn handle_admitted_request(
         http_id: id,
         method: method.into(),
         params,
-        attribution,
         response_tx,
         terminal_tx,
     };
@@ -716,7 +680,7 @@ mod tests {
     #[test]
     fn stateless_declarations_do_not_allocate_routes() {
         let (tx, _rx) = mpsc::channel(1);
-        let state = BridgeState::new(tx, None);
+        let state = BridgeState::new(tx);
         let first = state.declaration_url(1234, "server/one");
         let other = state.declaration_url(1234, "server/two");
         assert_eq!(first, state.declaration_url(1234, "server/one"));
@@ -732,7 +696,7 @@ mod tests {
     #[tokio::test]
     async fn origin_and_authentication_are_checked_without_polling_body() {
         let (tx, _rx) = mpsc::channel(1);
-        let state = BridgeState::new(tx, None);
+        let state = BridgeState::new(tx);
         let (_, token) = state.declaration_url(8000, "server");
         for (origin, auth, expected) in [
             (
@@ -784,7 +748,7 @@ mod tests {
                 (-33002, StatusCode::OK),
             ] {
                 let (tx, mut rx) = mpsc::channel(1);
-                let state = BridgeState::new(tx, None);
+                let state = BridgeState::new(tx);
                 let (_, token) = state.declaration_url(8000, "server");
                 let mut headers = HeaderMap::new();
                 headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
@@ -865,7 +829,7 @@ mod tests {
     #[tokio::test]
     async fn bridge_failure_preserves_valid_external_id() {
         let (tx, rx) = mpsc::channel(1);
-        let state = BridgeState::new(tx, None);
+        let state = BridgeState::new(tx);
         drop(rx);
         let (_, token) = state.declaration_url(8000, "server");
         let mut headers = HeaderMap::new();
@@ -904,7 +868,7 @@ mod tests {
     #[tokio::test]
     async fn unread_validation_errors_hold_admission_until_consumed_or_dropped() {
         let (tx, _rx) = mpsc::channel(1);
-        let state = BridgeState::new(tx, None);
+        let state = BridgeState::new(tx);
         let (_, token) = state.declaration_url(8000, "server");
         let route = server_route("server");
         let mut headers = HeaderMap::new();
@@ -960,7 +924,7 @@ mod tests {
     #[tokio::test]
     async fn unread_terminal_bodies_hold_admission_until_drop() {
         let (tx, mut rx) = mpsc::channel(128);
-        let state = BridgeState::new(tx, None);
+        let state = BridgeState::new(tx);
         let (_, token) = state.declaration_url(8000, "server");
         let route = server_route("server");
         let mut headers = HeaderMap::new();
@@ -1145,7 +1109,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (tx, mut rx) = mpsc::channel(8);
-        let state = BridgeState::new(tx, None);
+        let state = BridgeState::new(tx);
         let (url, token) = state.declaration_url(address.port(), "server");
         let route = url.rsplit('/').next().unwrap();
         let task = tokio::spawn(run_http_listener(listener, state));
@@ -1320,176 +1284,5 @@ mod tests {
                 binding_error(code.into(), "passes through")
             );
         }
-    }
-
-    fn tools_list_params(tool_use: &str) -> Value {
-        serde_json::json!({
-            "cursor":"page-2",
-            "_meta":{
-                "io.modelcontextprotocol/protocolVersion":VERSION,
-                "io.modelcontextprotocol/clientCapabilities":{},
-                "example.com/toolUseId":tool_use
-            }
-        })
-    }
-
-    /// Sends one valid `tools/list` request whose `_meta` names `tool_use` to
-    /// the `server` route.
-    async fn post_tools_list(state: Arc<BridgeState>, tool_use: &str) -> Response {
-        let (_, token) = state.declaration_url(8000, "server");
-        let mut headers = HeaderMap::new();
-        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
-        headers.insert(
-            "accept",
-            "application/json, text/event-stream".parse().unwrap(),
-        );
-        headers.insert("content-type", "application/json".parse().unwrap());
-        headers.insert("mcp-protocol-version", VERSION.parse().unwrap());
-        headers.insert("mcp-method", "tools/list".parse().unwrap());
-        handle_request(
-            State(state),
-            Path(server_route("server")),
-            axum::http::Method::POST,
-            headers,
-            Body::from(
-                serde_json::json!({
-                    "jsonrpc":"2.0","id":"external","method":"tools/list",
-                    "params":tools_list_params(tool_use)
-                })
-                .to_string(),
-            ),
-        )
-        .await
-    }
-
-    #[tokio::test]
-    async fn resolver_names_the_session_and_tool_call_of_each_request() {
-        use super::super::McpHttpRequestAttribution;
-
-        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let resolver = AttributionResolver::new({
-            let asked = asked.clone();
-            move |request: McpHttpRequestInfo| {
-                let tool_use = request
-                    .params
-                    .as_ref()
-                    .and_then(|params| params.get("_meta")?.get("example.com/toolUseId")?.as_str());
-                let attribution = match tool_use {
-                    Some("toolu_1") => Some(
-                        McpHttpRequestAttribution::new("sess_child_1").tool_call_id("call_001"),
-                    ),
-                    Some("toolu_2") => Some(McpHttpRequestAttribution::new("sess_root")),
-                    _ => None,
-                };
-                asked.lock().unwrap().push(request);
-                std::future::ready(Ok(attribution))
-            }
-        });
-        for (resolver, tool_use, expected) in [
-            (
-                Some(resolver.clone()),
-                "toolu_1",
-                Some(McpHttpRequestAttribution::new("sess_child_1").tool_call_id("call_001")),
-            ),
-            (
-                Some(resolver.clone()),
-                "toolu_2",
-                Some(McpHttpRequestAttribution::new("sess_root")),
-            ),
-            // A request the host cannot match is forwarded without attribution.
-            (Some(resolver), "toolu_unknown", None),
-            // So is every request when there is no resolver.
-            (None, "toolu_1", None),
-        ] {
-            let (tx, mut rx) = mpsc::channel(1);
-            let state = BridgeState::new(tx, resolver);
-            let serve = async {
-                let BridgeMessage::Request {
-                    http_id,
-                    attribution,
-                    terminal_tx,
-                    ..
-                } = rx.next().await.unwrap()
-                else {
-                    panic!("expected request")
-                };
-                terminal_tx
-                    .send(rpc_result(http_id, "logical", Value::Null))
-                    .unwrap();
-                attribution
-            };
-            let (response, attribution) = tokio::join!(post_tools_list(state, tool_use), serve);
-            assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(attribution, expected, "{tool_use}");
-        }
-        let asked = asked.lock().unwrap();
-        assert_eq!(asked.len(), 3, "the resolver runs once for each request");
-        assert_eq!(asked[0].server_id, "server");
-        assert_eq!(asked[0].method, "tools/list");
-        assert_eq!(
-            asked[0].params.clone().map(Value::Object),
-            Some(tools_list_params("toolu_1"))
-        );
-    }
-
-    /// Collects what a `tracing` subscriber writes.
-    #[derive(Clone, Default)]
-    struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for LogCapture {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[tokio::test]
-    async fn failing_resolver_fails_the_request_without_forwarding_it() {
-        let (tx, mut rx) = mpsc::channel(1);
-        let state = BridgeState::new(
-            tx,
-            Some(AttributionResolver::new(|_request| {
-                std::future::ready(Err(Error::internal_error().data("PRIVATE lookup detail")))
-            })),
-        );
-        let logs = LogCapture::default();
-        let response = {
-            let writer = logs.clone();
-            let _capture = tracing::subscriber::set_default(
-                tracing_subscriber::fmt()
-                    .with_max_level(tracing::Level::WARN)
-                    .without_time()
-                    .with_ansi(false)
-                    .with_writer(move || writer.clone())
-                    .finish(),
-            );
-            post_tools_list(state.clone(), "toolu_1").await
-        };
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let bytes = to_bytes(response.into_body(), MAX_REQUEST_BODY_BYTES)
-            .await
-            .unwrap();
-        // The resolver's own message and data are not sent to the MCP client.
-        assert_eq!(
-            serde_json::from_slice::<Value>(&bytes).unwrap(),
-            serde_json::json!({
-                "jsonrpc":"2.0","id":"external",
-                "error":{"code":-33002,"message":"MCP attribution resolver failed"}
-            })
-        );
-        assert!(
-            rx.try_recv().is_err(),
-            "a request whose resolver failed must not reach ACP"
-        );
-        // The warning names the error's code and nothing else from it.
-        let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
-        assert!(logs.contains("MCP attribution resolver failed"));
-        assert!(logs.contains("code=-32603"));
-        assert!(!logs.contains("PRIVATE"));
-        assert!(!logs.contains("Internal error"));
     }
 }

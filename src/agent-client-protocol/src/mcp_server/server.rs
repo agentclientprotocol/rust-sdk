@@ -7,12 +7,12 @@ use futures::{StreamExt, channel::mpsc};
 use crate::{
     ConnectTo, Dispatch, DynConnectTo, Role,
     jsonrpc::run::{NullRun, RunWithConnectionTo},
-    mcp_server::{McpConnectionTo, McpServerConnect},
+    mcp_server::{McpConnectionContext, McpConnectionTo, McpServerConnect},
     role,
 };
 
 #[cfg(feature = "unstable_mcp_over_acp")]
-use super::McpService;
+use super::{McpAdmission, McpRejection, McpService, admission::AdmissionChecks};
 #[cfg(feature = "unstable_mcp_over_acp")]
 use uuid::Uuid;
 
@@ -99,6 +99,10 @@ pub struct McpServer<Counterpart: Role, Run = NullRun> {
     #[cfg(feature = "unstable_mcp_over_acp")]
     service: Option<Arc<dyn McpService<Counterpart>>>,
 
+    /// The checks from `with_admission`, run before each `mcp/message` request.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    admission: AdmissionChecks,
+
     /// The runner is a task that should be run alongside the message handler.
     /// Some futures direct messages back through channels to this future which actually
     /// handles responding to the client.
@@ -137,6 +141,8 @@ where
             connect: Arc::new(c),
             #[cfg(feature = "unstable_mcp_over_acp")]
             service: None,
+            #[cfg(feature = "unstable_mcp_over_acp")]
+            admission: AdmissionChecks::default(),
             runner,
         }
     }
@@ -165,6 +171,7 @@ where
             phantom: PhantomData,
             connect: Arc::new(standalone),
             service: Some(Arc::new(service)),
+            admission: AdmissionChecks::default(),
             runner,
         }
     }
@@ -179,11 +186,13 @@ where
             phantom: _,
             connect,
             service,
+            admission,
             runner,
         } = self;
         let server_id = McpServerAcpId::new(format!("mcp-server:{}", Uuid::new_v4()));
         (
-            McpSessionHandler::new_with_service(server_id, connect, service),
+            McpSessionHandler::new_with_service(server_id, connect, service)
+                .with_admission(admission),
             runner,
         )
     }
@@ -198,13 +207,62 @@ where
             phantom: _,
             connect,
             service,
+            admission,
             runner,
         } = self;
         let server_id = McpServerAcpId::new(format!("mcp-server:{}", Uuid::new_v4()));
         (
-            V2McpSessionHandler::new_with_service(server_id, connect, service),
+            V2McpSessionHandler::new_with_service(server_id, connect, service)
+                .with_admission(admission),
             runner,
         )
+    }
+}
+
+#[cfg(feature = "unstable_mcp_over_acp")]
+impl<Counterpart: Role, Run> McpServer<Counterpart, Run> {
+    /// Adds a check that decides, before each `mcp/message` request runs,
+    /// whether the request is admitted.
+    ///
+    /// Use it for a server that needs the session of a request, or that
+    /// refuses a session after its own check:
+    ///
+    /// ```rust,ignore
+    /// let server = server.with_admission(move |request| {
+    ///     let session_id = request.require_session_id()?;
+    ///     if !sessions.is_active(session_id) {
+    ///         return Err(McpRejection::session_rejected("the session is not active"));
+    ///     }
+    ///     Ok(())
+    /// });
+    /// ```
+    ///
+    /// The check runs for every request to this server, such as `tools/call`,
+    /// `tools/list`, and `server/discover`. It runs after the SDK has checked
+    /// the inner request's own metadata, and before anything else: a rejected
+    /// request reaches no service, connector, or tool, and its request ID is
+    /// not held as active. The SDK answers it with the outer ACP error Invalid
+    /// params (`-32602`), with the [`McpRejection`]'s reason as the `data`
+    /// string.
+    ///
+    /// The check is synchronous and runs on the connection's dispatch path,
+    /// so it has to decide from what the provider already holds in memory,
+    /// such as its list of active sessions. It must not block.
+    ///
+    /// Calling this method again adds another check. The SDK runs them in the
+    /// order they were added and answers with the first rejection. A
+    /// service's own [`McpService::admit`] runs after all of them.
+    ///
+    /// A standalone MCP connection has no `mcp/message` request, so the check
+    /// does not run there. A tool that is also served standalone still has to
+    /// handle a request without a session.
+    #[must_use]
+    pub fn with_admission(
+        mut self,
+        admit: impl Fn(&McpAdmission<'_>) -> Result<(), McpRejection> + Send + Sync + 'static,
+    ) -> Self {
+        self.admission.push(admit);
+        self
     }
 }
 
@@ -264,6 +322,12 @@ where
             server_id,
             connect,
         }
+    }
+
+    /// Sets the checks from `McpServer::with_admission`.
+    fn with_admission(mut self, admission: AdmissionChecks) -> Self {
+        self.active_session = self.active_session.with_admission(admission);
+        self
     }
 
     fn declaration(&self) -> SchemaMcpServer {
@@ -339,6 +403,12 @@ where
             server_id,
             connect,
         }
+    }
+
+    /// Sets the checks from `McpServer::with_admission`.
+    fn with_admission(mut self, admission: AdmissionChecks) -> Self {
+        self.active_session = self.active_session.with_admission(admission);
+        self
     }
 
     fn declaration(&self) -> crate::v2::schema::McpServer {
@@ -566,6 +636,8 @@ where
             phantom: _,
             #[cfg(feature = "unstable_mcp_over_acp")]
                 service: _,
+            #[cfg(feature = "unstable_mcp_over_acp")]
+                admission: _,
         } = self;
 
         let (tx, mut rx) = mpsc::unbounded();
@@ -582,7 +654,12 @@ where
             )
             .with_spawned(async move |connection_to_client| {
                 let spawned_server: DynConnectTo<role::mcp::Client> =
-                    connect.connect(McpConnectionTo::standalone(connection_to_client.clone()));
+                    connect.connect(McpConnectionTo {
+                        context: McpConnectionContext::Standalone,
+                        connection: connection_to_client.clone(),
+                        #[cfg(feature = "unstable_mcp_over_acp")]
+                        cleanup: None,
+                    });
 
                 role::mcp::Client
                     .builder()

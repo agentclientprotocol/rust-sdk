@@ -7,8 +7,6 @@ use agent_client_protocol::{
 };
 use serde_json::{Map, Value};
 
-use super::McpHttpRequestAttribution;
-
 #[cfg(feature = "unstable_session_fork")]
 use agent_client_protocol::v1::schema::ForkSessionRequest;
 #[cfg(feature = "unstable_protocol_v2")]
@@ -257,25 +255,14 @@ impl PolyfillProtocol {
         request_id: String,
         method: String,
         params: Option<Map<String, Value>>,
-        attribution: Option<McpHttpRequestAttribution>,
     ) -> Result<UntypedMessage, Error> {
-        // Only the host's resolver supplies these. An HTTP request names
-        // neither, and the adapter does not guess.
-        let (session_id, tool_call_id) = match attribution {
-            Some(attribution) => (Some(attribution.session_id), attribution.tool_call_id),
-            None => (None, None),
-        };
         match self {
             Self::V1 => v1::MessageMcpRequest::new(server_id, request_id, method)
                 .params(params)
-                .session_id(session_id.map(v1::SessionId::new))
-                .tool_call_id(tool_call_id.map(v1::ToolCallId::new))
                 .to_untyped_message(),
             #[cfg(feature = "unstable_protocol_v2")]
             Self::V2 => v2::MessageMcpRequest::new(server_id, request_id, method)
                 .params(params)
-                .session_id(session_id.map(v2::SessionId::new))
-                .tool_call_id(tool_call_id.map(v2::ToolCallId::new))
                 .to_untyped_message(),
         }
     }
@@ -428,7 +415,6 @@ mod tests {
                     "logical".into(),
                     "tools/call".into(),
                     Some(params.as_object().unwrap().clone()),
-                    None,
                 )
                 .unwrap();
             assert_eq!(message.method(), "mcp/message");
@@ -437,39 +423,6 @@ mod tests {
             assert_eq!(message.params()["params"], params);
             assert!(message.params().get("connectionId").is_none());
             assert!(message.params().get("_meta").is_none());
-            // Without attribution from the host, the request names no session
-            // or tool call.
-            assert!(message.params().get("sessionId").is_none());
-            assert!(message.params().get("toolCallId").is_none());
-        }
-    }
-
-    #[test]
-    fn request_wrappers_carry_the_attribution_the_host_supplied() {
-        for protocol in [
-            PolyfillProtocol::V1,
-            #[cfg(feature = "unstable_protocol_v2")]
-            PolyfillProtocol::V2,
-        ] {
-            let request = |attribution| {
-                protocol
-                    .message_request(
-                        "server".into(),
-                        "logical".into(),
-                        "tools/call".into(),
-                        None,
-                        Some(attribution),
-                    )
-                    .unwrap()
-            };
-            let session_only = request(McpHttpRequestAttribution::new("sess_child_1"));
-            assert_eq!(session_only.params()["sessionId"], "sess_child_1");
-            assert!(session_only.params().get("toolCallId").is_none());
-
-            let with_tool_call =
-                request(McpHttpRequestAttribution::new("sess_child_1").tool_call_id("call_001"));
-            assert_eq!(with_tool_call.params()["sessionId"], "sess_child_1");
-            assert_eq!(with_tool_call.params()["toolCallId"], "call_001");
         }
     }
 

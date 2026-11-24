@@ -1513,20 +1513,20 @@ For a client or proxy that provides an MCP server:
   omits it.
 - Do not reject or delay a request because you have not seen its tool call.
   The agent can report the call after it sends the request.
-- A server that needs the session calls `require_session_id()` on
-  `McpRequestContext` or `McpConnectionTo`. It returns the session ID, or
-  rejects a request without one with Invalid params (`-32602`). When your own
-  check of a session fails, return the error from `reject_session(reason)`,
-  which rejects the request the same way. Both calls work in an `McpService`
-  and in a `tool_fn` or `tool_fn_mut` closure. An rmcp `ServerHandler` passed
-  to `from_rmcp` makes them on its `McpRequestAttribution`, where they return
-  an rmcp `ErrorData`. See
+- A server that needs the session, or refuses one after its own check, rejects
+  the request before it runs. Add an admission check with
+  `McpServer::with_admission`. It receives an `McpAdmission` and returns an
+  `McpRejection`, such as `McpRejection::session_required()` from
+  `require_session_id()?`, or `McpRejection::session_rejected(reason)`. The
+  agent receives Invalid params (`-32602`), and no service, connector, or tool
+  runs. The check works for every kind of server and every method, including
+  `tools/list` and `server/discover`.
+- A tool can state its own rule: `McpTool::admit`, or `tool_admission` on the
+  rmcp `McpServerBuilder` for a `tool_fn` or `tool_fn_mut` tool. See
   [Rejecting a request for its session](./mcp-over-acp.md#rejecting-a-request-for-its-session).
-- `McpServerBuilder` answers `tools/list` and discovery itself. A server that
-  needs the session for those is a `from_rmcp` handler or a hand-written
-  `McpService`.
-- Any other error returned from `McpService::execute` is still reported as a
-  backend failure (`-33002`).
+- An error returned from `McpService::execute` is still reported as a backend
+  failure (`-33002`), and an error from a function tool is still a tool result
+  with `isError: true`. Neither rejects a request.
 
 For an agent that calls a server:
 
@@ -1538,10 +1538,8 @@ For an agent that calls a server:
   `session_id`.
 - Report the tool call before you send the request that names it, when you
   can.
-- The MCP polyfill's HTTP bridge sends neither field by default. An MCP HTTP
-  request does not say which session or tool call it belongs to. A host that
-  knows can supply both with `McpOverAcpPolyfill::with_attribution`. See
-  [Session and tool call attribution](./mcp-bridge.md#session-and-tool-call-attribution).
+- The MCP polyfill's HTTP bridge sends neither field. An MCP HTTP request does
+  not say which session or tool call it belongs to.
 
 Two malformed v1 payloads no longer parse, so an agent built on the SDK answers
 Invalid params (`-32602`) instead of acting on them:

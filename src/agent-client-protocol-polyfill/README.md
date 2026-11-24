@@ -9,9 +9,9 @@ HTTP but not the native ACP binding. Insert it immediately before that agent
 in a conductor proxy chain. It does not provide a fallback to older MCP
 revisions or add MCP support to an agent with neither transport.
 
-An HTTP MCP request does not name its ACP session or tool call, so the bridge
-sends each `mcp/message` request without `sessionId` and `toolCallId`. A host
-that knows them supplies both with `McpOverAcpPolyfill::with_attribution`.
+The bridge sends each `mcp/message` request without `sessionId` and
+`toolCallId`, because an MCP HTTP request does not say which session it belongs
+to.
 
 ```toml
 [dependencies]

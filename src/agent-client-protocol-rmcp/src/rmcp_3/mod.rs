@@ -99,11 +99,8 @@ pub trait McpServerExt<Counterpart: Role>: sealed::Sealed {
     ///
     /// ```ignore
     /// #[tool(description = "Lists the notes of the session")]
-    /// async fn list_notes(
-    ///     &self,
-    ///     attribution: McpRequestAttribution,
-    /// ) -> Result<CallToolResult, ErrorData> {
-    ///     let session_id = attribution.require_session_id()?;
+    /// async fn list_notes(&self, attribution: McpRequestAttribution) -> CallToolResult {
+    ///     let session_id = attribution.session_id();
     ///     // ...
     /// }
     /// ```
@@ -114,26 +111,28 @@ pub trait McpServerExt<Counterpart: Role>: sealed::Sealed {
     ///
     /// ```ignore
     /// let attribution = McpRequestAttribution::of(&context);
-    /// let session_id = attribution.require_session_id()?;
     /// ```
     ///
-    /// `require_session_id` and `reject_session` reject the whole
-    /// `mcp/message` request with Invalid params (`-32602`), which replaces
-    /// the MCP error the handler returns. Use them in `list_tools` or
-    /// `discover` when the server needs the session before any tool runs.
+    /// On a standalone connection the attribution has no session and no tool
+    /// call.
     ///
-    /// On a standalone connection the attribution has no session, and
-    /// `require_session_id` returns its error without rejecting anything.
+    /// # Requiring a session
     ///
-    /// # The host connection of a request
+    /// A server that needs the session of a request rejects a request without
+    /// one before the handler runs. With the core crate's
+    /// `unstable_mcp_over_acp` feature, add the check with
+    /// `McpServer::with_admission` on the server this returns. The SDK does
+    /// not know the handler's `#[tool]` methods, so a rule for one tool goes
+    /// in that check, by `tool_name()`:
     ///
-    /// With the core crate's `unstable_mcp_over_acp` feature, a handler that
-    /// needs the host ACP connection finds the request's [`McpConnectionTo`]
-    /// in rmcp's request extensions, with
-    /// `context.extensions.get::<McpConnectionTo<Counterpart>>()`.
-    /// `Counterpart` is the role this server is attached to, such as `Agent`.
-    /// A lookup with another role returns `None`, and so does every lookup on
-    /// a standalone connection.
+    /// ```ignore
+    /// let server = McpServer::from_rmcp("notes", Notes::new).with_admission(|request| {
+    ///     if request.tool_name() == Some("list_notes") {
+    ///         request.require_session_id()?;
+    ///     }
+    ///     Ok(())
+    /// });
+    /// ```
     ///
     /// # See also
     ///

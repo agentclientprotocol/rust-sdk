@@ -366,7 +366,7 @@ mod tests {
     use futures::FutureExt as _;
 
     use super::*;
-    use crate::{Channel, role::mcp};
+    use crate::{Channel, mcp_server::McpConnectionContext, role::mcp};
 
     type ResultReceiver = CallResult<u32, u32, mcp::Client>;
 
@@ -494,7 +494,12 @@ mod tests {
         futures::executor::block_on(mcp::Server.builder().connect_with(
             channel,
             async |connection| {
-                let context = McpConnectionTo::standalone(connection.clone());
+                let context = McpConnectionTo {
+                    context: McpConnectionContext::Standalone,
+                    connection: connection.clone(),
+                    #[cfg(feature = "unstable_mcp_over_acp")]
+                    cleanup: None,
+                };
                 let state = State::default();
                 let (call_tx, call_rx) = mpsc::channel(128);
                 let tool = ToolFnTool {
@@ -643,8 +648,9 @@ mod tests {
 
                 let cleanup = Arc::new(Mutex::new(Vec::<oneshot::Receiver<()>>::new()));
                 let context = McpConnectionTo {
+                    context: McpConnectionContext::Standalone,
+                    connection,
                     cleanup: Some(cleanup.clone()),
-                    ..McpConnectionTo::standalone(connection)
                 };
                 // Force send() to suspend in its flush, with the payload
                 // already in the channel but no runner receiving it.

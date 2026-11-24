@@ -154,16 +154,17 @@ pub(crate) fn execute<R: Role, S: Service<RoleServer>>(
                 ));
             }
         };
-        // Hand the handler the attribution and the host connection of this
-        // `mcp/message` request, the way an rmcp transport passes its own
-        // data. rmcp moves a request's extensions into
-        // `RequestContext::extensions`. Both share the request's rejection
-        // slot.
+        // Hand the handler the attribution of this `mcp/message` request, the
+        // way an rmcp transport passes its own data. rmcp moves a request's
+        // extensions into `RequestContext::extensions`.
         if let JsonRpcMessage::Request(inbound) = &mut inbound {
-            let connection = context.connection();
-            let extensions = inbound.request.extensions_mut();
-            extensions.insert(McpRequestAttribution::for_request(connection.clone()));
-            extensions.insert(connection.clone());
+            inbound
+                .request
+                .extensions_mut()
+                .insert(McpRequestAttribution {
+                    session_id: context.session_id().cloned(),
+                    tool_call_id: context.tool_call_id().cloned(),
+                });
         }
         let (transport, mut output) = OneshotTransport::<RoleServer>::new(inbound);
         let cancel = CancellationToken::new();

@@ -1,7 +1,7 @@
 //! Checks the changes from schema 1.22. Two malformed v1 payloads get Invalid
 //! params (`-32602`) instead of being read as something else, the session and
-//! tool call of an `mcp/message` request reach the MCP service, and the
-//! service can reject a request for its session with `-32602`.
+//! tool call of an `mcp/message` request reach the MCP service, and a server's
+//! admission check can reject a request for its session before it runs.
 
 use agent_client_protocol::{
     Agent, Channel, Client, Responder, TransportFrame, V1,
@@ -125,20 +125,31 @@ async fn v1_boolean_config_value_with_a_string_gets_invalid_params() {
 
 #[cfg(feature = "unstable_mcp_over_acp")]
 mod mcp_attribution {
-    use super::{TIMEOUT, receive, send, v1};
+    use super::{TIMEOUT, receive, send};
     use agent_client_protocol::{
-        Agent, Channel, Client, Error, NullRun,
-        mcp_server::{McpOutcome, McpRequest, McpRequestContext, McpServer, McpService},
+        Agent, Channel, Client, DynConnectTo, Error, NullRun,
+        mcp_server::{
+            McpAdmission, McpConnectionTo, McpOutcome, McpRejection, McpRequest, McpRequestContext,
+            McpServer, McpServerConnect, McpService,
+        },
+        role,
     };
     #[cfg(feature = "unstable_protocol_v2")]
     use agent_client_protocol::{schema::ProtocolVersion, v2::schema as v2};
     use futures::future::BoxFuture;
     use serde_json::{Value, json};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
     use tokio::sync::oneshot;
 
-    /// Answers `tools/call` with the session and tool call the request was
-    /// sent for. Each `test/...` method ends the request in one other way.
-    struct Service;
+    /// Counts the requests it runs, and answers `tools/call` with the session
+    /// and tool call the request was sent for.
+    #[derive(Default)]
+    struct Service {
+        runs: Arc<AtomicUsize>,
+    }
 
     impl McpService<Agent> for Service {
         fn execute(
@@ -146,125 +157,154 @@ mod mcp_attribution {
             request: McpRequest,
             context: McpRequestContext<Agent>,
         ) -> BoxFuture<'static, Result<McpOutcome, Error>> {
-            Box::pin(async move {
-                let session = |id: &v1::SessionId| McpOutcome::Result(json!({"sessionId": id}));
-                match request.method.as_str() {
-                    "tools/call" => {
-                        // A `tool_fn` closure receives `context.connection()`,
-                        // so check that it carries the same values.
-                        let connection = context.connection();
-                        assert_eq!(context.session_id(), connection.session_id());
-                        assert_eq!(context.tool_call_id(), connection.tool_call_id());
-                        Ok(McpOutcome::Result(json!({
-                            "sessionId": context.session_id(),
-                            "toolCallId": context.tool_call_id(),
-                        })))
-                    }
-                    "test/require" => Ok(session(context.require_session_id()?)),
-                    "test/require_on_connection" => {
-                        Ok(session(context.connection().require_session_id()?))
-                    }
-                    "test/reject" => Err(context.reject_session("the session is not active")),
-                    "test/reject_then_result" => {
-                        let _rejection = context.reject_session("ignored by the service");
-                        Ok(McpOutcome::Result(json!({"ran": true})))
-                    }
-                    "test/reject_then_mcp_error" => {
-                        let _rejection = context.reject_session("ignored by the service");
-                        Ok(McpOutcome::Error(v1::McpError::new(-32000, "tool failed")))
-                    }
-                    "test/reject_then_other_error" => {
-                        let _rejection = context.reject_session("ignored by the service");
-                        Err(Error::internal_error())
-                    }
-                    "test/reject_twice" => {
-                        let _first = context.reject_session("first");
-                        Err(context.reject_session("second"))
-                    }
-                    "test/reject_then_wait_for_cancellation" => {
-                        let _rejection = context.reject_session("before the cancellation");
-                        context.operation_cancellation().cancelled().await;
-                        Ok(McpOutcome::Result(json!({"ran": true})))
-                    }
-                    "test/fail" => Err(Error::internal_error().data("database unavailable")),
-                    "test/invalid_params_without_rejection" => {
-                        Err(Error::invalid_params().data("not recorded as a rejection"))
-                    }
-                    method => panic!("unexpected test method {method}"),
-                }
-            })
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            // A `tool_fn` closure receives `context.connection()`, so check
+            // that it carries the same values.
+            let connection = context.connection();
+            assert_eq!(context.session_id(), connection.session_id());
+            assert_eq!(context.tool_call_id(), connection.tool_call_id());
+            let result = match request.method.as_str() {
+                "tools/call" => Ok(json!({
+                    "sessionId": context.session_id(),
+                    "toolCallId": context.tool_call_id(),
+                })),
+                "tools/list" => Ok(json!({"tools": []})),
+                "server/discover" => Ok(json!({"supportedVersions": ["2026-07-28"]})),
+                "test/fail" => Err(Error::internal_error().data("database unavailable")),
+                "test/invalid_params" => Err(Error::invalid_params().data("from the service")),
+                method => panic!("unexpected test method {method}"),
+            };
+            Box::pin(async move { result.map(McpOutcome::Result) })
+        }
+    }
+
+    /// A service that states its own admission rule.
+    struct ChildSessionsOnly(Service);
+
+    impl McpService<Agent> for ChildSessionsOnly {
+        fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection> {
+            match request.session_id() {
+                Some(session_id) if session_id.0.as_ref() == "child" => Ok(()),
+                _ => Err(McpRejection::session_rejected(
+                    "not a session of this service",
+                )),
+            }
+        }
+
+        fn execute(
+            &self,
+            request: McpRequest,
+            context: McpRequestContext<Agent>,
+        ) -> BoxFuture<'static, Result<McpOutcome, Error>> {
+            self.0.execute(request, context)
+        }
+    }
+
+    /// A connector-based server that counts the backends it is asked for.
+    struct CountingConnector {
+        connects: Arc<AtomicUsize>,
+    }
+
+    impl McpServerConnect<Agent> for CountingConnector {
+        fn name(&self) -> String {
+            "connector".into()
+        }
+
+        fn connect(&self, _cx: McpConnectionTo<Agent>) -> DynConnectTo<role::mcp::Client> {
+            self.connects.fetch_add(1, Ordering::SeqCst);
+            panic!("a rejected request must not reach the connector")
         }
     }
 
     fn server() -> McpServer<Agent, NullRun> {
-        McpServer::new_service("attribution", Service, NullRun)
+        McpServer::new_service("attribution", Service::default(), NullRun)
+    }
+
+    /// A server that counts its runs in `runs`.
+    fn counting_server(runs: &Arc<AtomicUsize>) -> McpServer<Agent, NullRun> {
+        McpServer::new_service("attribution", Service { runs: runs.clone() }, NullRun)
+    }
+
+    /// The check of a server that needs the session of every request.
+    fn require_session(request: &McpAdmission<'_>) -> Result<(), McpRejection> {
+        request.require_session_id()?;
+        Ok(())
+    }
+
+    /// The inner params of a request: `extra` and the `_meta` every modern
+    /// MCP request carries.
+    fn inner(mut extra: Value) -> Value {
+        extra["_meta"] = json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {}
+        });
+        extra
     }
 
     /// One `mcp/message` request for the Agent side of a test to send.
     #[derive(Clone)]
     struct Call {
+        /// The logical `requestId`, also used as the outer request ID.
+        id: &'static str,
         /// The inner MCP method.
         method: &'static str,
-        /// The `sessionId` and `toolCallId` to merge into the request's params.
+        /// The inner MCP params.
+        params: Value,
+        /// The `sessionId` and `toolCallId` to merge into the envelope.
         attribution: Value,
-        /// Whether to cancel the request right after sending it.
-        cancel: bool,
     }
 
     impl Call {
         fn new(method: &'static str, attribution: Value) -> Self {
             Self {
+                id: "call",
                 method,
+                params: inner(json!({})),
                 attribution,
-                cancel: false,
             }
         }
     }
 
     /// Plays the Agent on `peer`: answers the session setup request, sends
-    /// `call` as one `mcp/message` request, and returns the response.
-    async fn exchange(peer: &mut Channel, call: &Call) -> Value {
+    /// `calls` in order as `mcp/message` requests, and returns the declared
+    /// server ID and the responses.
+    async fn exchange(peer: &mut Channel, calls: &[Call]) -> (Value, Vec<Value>) {
         let setup = receive(peer).await;
         let server_id = setup["params"]["mcpServers"][0]["serverId"].clone();
         send(
             peer,
             json!({"jsonrpc": "2.0", "id": setup["id"], "result": {"sessionId": "parent"}}),
         );
-        let mut params = json!({
-            "serverId": server_id,
-            "requestId": "call",
-            "method": call.method,
-            "params": {"_meta": {
-                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-                "io.modelcontextprotocol/clientCapabilities": {}
-            }}
-        });
-        params
-            .as_object_mut()
-            .unwrap()
-            .extend(call.attribution.as_object().unwrap().clone());
-        send(
-            peer,
-            json!({"jsonrpc": "2.0", "id": "call", "method": "mcp/message", "params": params}),
-        );
-        if call.cancel {
+        let mut responses = Vec::new();
+        for call in calls {
+            let mut envelope = json!({
+                "serverId": server_id,
+                "requestId": call.id,
+                "method": call.method,
+                "params": call.params,
+            });
+            envelope
+                .as_object_mut()
+                .unwrap()
+                .extend(call.attribution.as_object().unwrap().clone());
             send(
                 peer,
-                json!({"jsonrpc": "2.0", "method": "$/cancel_request", "params": {"requestId": "call"}}),
+                json!({"jsonrpc": "2.0", "id": call.id, "method": "mcp/message", "params": envelope}),
             );
+            let response = receive(peer).await;
+            assert_eq!(response["id"], call.id, "{response}");
+            responses.push(response);
         }
-        let response = receive(peer).await;
-        assert_eq!(response["id"], "call", "{response}");
-        response
+        (server_id, responses)
     }
 
-    async fn v1_call(call: Call) -> Value {
+    async fn v1_calls(server: McpServer<Agent, NullRun>, calls: &[Call]) -> (Value, Vec<Value>) {
         tokio::time::timeout(TIMEOUT, async {
             let (transport, mut peer) = Channel::duplex();
             let (stop_tx, stop_rx) = oneshot::channel();
             let client = tokio::spawn(Client.v1().connect_with(transport, async move |cx| {
                 cx.build_session_cwd()?
-                    .with_mcp_server(server())?
+                    .with_mcp_server(server)?
                     .block_task()
                     .run_until(async |_session| {
                         stop_rx.await.unwrap();
@@ -272,17 +312,17 @@ mod mcp_attribution {
                     })
                     .await
             }));
-            let response = exchange(&mut peer, &call).await;
+            let exchanged = exchange(&mut peer, calls).await;
             stop_tx.send(()).unwrap();
             client.await.unwrap().unwrap();
-            response
+            exchanged
         })
         .await
-        .expect("the v1 MCP call timed out")
+        .expect("the v1 MCP calls timed out")
     }
 
     #[cfg(feature = "unstable_protocol_v2")]
-    async fn v2_call(call: Call) -> Value {
+    async fn v2_calls(server: McpServer<Agent, NullRun>, calls: &[Call]) -> (Value, Vec<Value>) {
         tokio::time::timeout(TIMEOUT, async {
             let (transport, mut peer) = Channel::duplex();
             let (stop_tx, stop_rx) = oneshot::channel();
@@ -297,7 +337,7 @@ mod mcp_attribution {
                 // The attachment lives as long as the connection.
                 let _setup = cx
                     .build_session_cwd()?
-                    .with_mcp_server(server())?
+                    .with_mcp_server(server)?
                     .start_session()
                     .block_task()
                     .await?;
@@ -319,13 +359,41 @@ mod mcp_attribution {
                         .capabilities(capabilities),
                 }),
             );
-            let response = exchange(&mut peer, &call).await;
+            let exchanged = exchange(&mut peer, calls).await;
             stop_tx.send(()).unwrap();
             client.await.unwrap().unwrap();
-            response
+            exchanged
         })
         .await
-        .expect("the v2 MCP call timed out")
+        .expect("the v2 MCP calls timed out")
+    }
+
+    /// The protocol versions this build can attach a server to.
+    #[derive(Clone, Copy, Debug)]
+    enum Version {
+        V1,
+        #[cfg(feature = "unstable_protocol_v2")]
+        V2,
+    }
+
+    const VERSIONS: &[Version] = &[
+        Version::V1,
+        #[cfg(feature = "unstable_protocol_v2")]
+        Version::V2,
+    ];
+
+    /// Attaches `server` to a session of `version`, sends `calls` in order,
+    /// and returns the declared server ID and the responses.
+    async fn run(
+        version: Version,
+        server: McpServer<Agent, NullRun>,
+        calls: &[Call],
+    ) -> (Value, Vec<Value>) {
+        match version {
+            Version::V1 => v1_calls(server, calls).await,
+            #[cfg(feature = "unstable_protocol_v2")]
+            Version::V2 => v2_calls(server, calls).await,
+        }
     }
 
     /// What the service sees for each form of attribution the Agent can send.
@@ -347,134 +415,282 @@ mod mcp_attribution {
         ]
     }
 
+    /// A server without an admission check runs every request, with or
+    /// without a session.
     #[tokio::test]
-    async fn v1_service_sees_the_session_and_tool_call_of_a_request() {
-        for (attribution, seen) in cases() {
-            let response = v1_call(Call::new("tools/call", attribution.clone())).await;
-            assert_eq!(response["result"]["result"], seen, "{attribution}");
+    async fn service_sees_the_session_and_tool_call_of_a_request() {
+        for &version in VERSIONS {
+            for (attribution, seen) in cases() {
+                let call = Call::new("tools/call", attribution.clone());
+                let (_, responses) = run(version, server(), &[call]).await;
+                assert_eq!(
+                    responses[0]["result"]["result"], seen,
+                    "{version:?} {attribution}"
+                );
+            }
+            // A `sessionId` that is not a string is a malformed envelope.
+            let call = Call::new("tools/call", json!({"sessionId": 42}));
+            let (_, responses) = run(version, server(), &[call]).await;
+            assert_eq!(responses[0]["error"]["code"], -32602, "{version:?}");
         }
-        // A `sessionId` that is not a string is a malformed envelope.
-        let response = v1_call(Call::new("tools/call", json!({"sessionId": 42}))).await;
-        assert_eq!(response["error"]["code"], -32602, "{response}");
     }
 
-    #[cfg(feature = "unstable_protocol_v2")]
+    /// Whether `response` is the outer error Invalid params with `reason`.
+    #[track_caller]
+    fn assert_rejected(response: &Value, reason: &str) {
+        assert_eq!(
+            response.get("error"),
+            Some(&json!({"code": -32602, "message": "Invalid params", "data": reason})),
+            "{response}"
+        );
+        assert_eq!(response.get("result"), None, "{response}");
+    }
+
+    const SESSION_REQUIRED: &str = "this MCP server requires sessionId on mcp/message";
+
+    /// The check runs for every method. A rejected request does not reach
+    /// the service, and its `requestId` is free for the next request.
     #[tokio::test]
-    async fn v2_service_sees_the_session_and_tool_call_of_a_request() {
-        for (attribution, seen) in cases() {
-            let response = v2_call(Call::new("tools/call", attribution.clone())).await;
-            assert_eq!(response["result"]["result"], seen, "{attribution}");
-        }
-        let response = v2_call(Call::new("tools/call", json!({"sessionId": 42}))).await;
-        assert_eq!(response["error"]["code"], -32602, "{response}");
-    }
-
-    fn invalid_params(data: &str) -> Value {
-        json!({"error": {"code": -32602, "message": "Invalid params", "data": data}})
-    }
-
-    /// Each request and the body of its response: the outer error of a
-    /// rejected, failed or cancelled request, or the carrier of a request the
-    /// service ran.
-    fn rejection_cases() -> Vec<(Call, Value)> {
-        let missing = invalid_params("this MCP server requires sessionId on mcp/message");
-        let ignored = invalid_params("sessionId rejected: ignored by the service");
+    async fn admission_check_rejects_a_request_before_it_runs() {
         let child = json!({"sessionId": "child"});
-        vec![
-            // A request without a session is rejected, through the context or
-            // through the connection a tool receives.
-            (Call::new("test/require", json!({})), missing.clone()),
-            (
-                Call::new("test/require", json!({"sessionId": null})),
-                missing.clone(),
-            ),
-            (Call::new("test/require_on_connection", json!({})), missing),
-            // A request with a session runs.
-            (
-                Call::new("test/require", child.clone()),
-                json!({"result": {"result": {"sessionId": "child"}}}),
-            ),
-            (
-                Call::new("test/require_on_connection", child.clone()),
-                json!({"result": {"result": {"sessionId": "child"}}}),
-            ),
-            // A session that the service's own check refuses.
-            (
-                Call::new("test/reject", child.clone()),
-                invalid_params("sessionId rejected: the session is not active"),
-            ),
-            // The rejection replaces whatever the service returns.
-            (
-                Call::new("test/reject_then_result", child.clone()),
-                ignored.clone(),
-            ),
-            (
-                Call::new("test/reject_then_mcp_error", child.clone()),
-                ignored.clone(),
-            ),
-            (
-                Call::new("test/reject_then_other_error", child.clone()),
-                ignored,
-            ),
-            // The first rejection of a request is the one sent.
-            (
-                Call::new("test/reject_twice", child.clone()),
-                invalid_params("sessionId rejected: first"),
-            ),
-            // A request the Agent cancelled before the service returned keeps
-            // Request cancelled, although a rejection was recorded.
-            (
-                Call {
-                    cancel: true,
-                    ..Call::new("test/reject_then_wait_for_cancellation", child.clone())
-                },
-                json!({"error": {"code": -32800, "message": "Request cancelled"}}),
-            ),
-            // An error that is not recorded as a rejection is a backend
-            // failure, whatever its own code is.
-            (
-                Call::new("test/fail", child.clone()),
-                json!({"error": {
-                    "code": -33002,
-                    "message": "MCP backend failure",
-                    "data": "Internal error: \"database unavailable\"",
-                }}),
-            ),
-            (
-                Call::new("test/invalid_params_without_rejection", child),
-                json!({"error": {
-                    "code": -33002,
-                    "message": "MCP backend failure",
-                    "data": "Invalid params: \"not recorded as a rejection\"",
-                }}),
-            ),
-        ]
-    }
+        for &version in VERSIONS {
+            let runs = Arc::new(AtomicUsize::new(0));
+            let rejected = ["tools/call", "tools/list", "server/discover"]
+                .map(|method| Call::new(method, json!({})));
+            let server = counting_server(&runs).with_admission(require_session);
+            let (_, responses) = run(version, server, &rejected).await;
+            for response in &responses {
+                assert_rejected(response, SESSION_REQUIRED);
+            }
+            assert_eq!(runs.load(Ordering::SeqCst), 0, "{version:?}");
 
-    /// Checks `response` against the body `expected` describes.
-    fn assert_body(call: &Call, response: &Value, expected: &Value) {
-        for key in ["result", "error"] {
+            // The same `requestId` as the rejected request before it.
+            let calls = [
+                Call::new("tools/call", json!({})),
+                Call::new("tools/call", child.clone()),
+                Call::new("tools/list", child.clone()),
+                Call::new("server/discover", child.clone()),
+            ];
+            let server = counting_server(&runs).with_admission(require_session);
+            let (_, responses) = run(version, server, &calls).await;
+            assert_rejected(&responses[0], SESSION_REQUIRED);
             assert_eq!(
-                response.get(key),
-                expected.get(key),
-                "{}: {response}",
-                call.method
+                responses[1]["result"]["result"],
+                json!({"sessionId": "child", "toolCallId": null}),
+                "{version:?}"
             );
+            assert_eq!(
+                responses[2]["result"]["result"],
+                json!({"tools": []}),
+                "{version:?}"
+            );
+            assert_eq!(
+                responses[3]["result"]["result"],
+                json!({"supportedVersions": ["2026-07-28"]}),
+                "{version:?}"
+            );
+            assert_eq!(runs.load(Ordering::SeqCst), 3, "{version:?}");
         }
     }
 
+    /// The check reads the envelope and the inner request, so it can apply a
+    /// rule to one tool and refuse a session it does not accept.
     #[tokio::test]
-    async fn v1_service_rejects_a_request_for_its_session() {
-        for (call, expected) in rejection_cases() {
-            assert_body(&call, &v1_call(call.clone()).await, &expected);
+    async fn admission_check_reads_the_request_it_decides_on() {
+        for &version in VERSIONS {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let server = server().with_admission({
+                let seen = seen.clone();
+                move |request| {
+                    seen.lock().unwrap().push(json!({
+                        "serverId": request.server_id(),
+                        "requestId": request.request_id(),
+                        "method": request.method(),
+                        "toolName": request.tool_name(),
+                        "params": request.params(),
+                        "sessionId": request.session_id(),
+                        "toolCallId": request.tool_call_id(),
+                    }));
+                    if request.tool_name() == Some("write")
+                        && request.require_session_id()?.0.as_ref() != "child"
+                    {
+                        return Err(McpRejection::session_rejected("the session is not active"));
+                    }
+                    Ok(())
+                }
+            });
+            let write = |id, attribution| Call {
+                id,
+                params: inner(json!({"name": "write"})),
+                ..Call::new("tools/call", attribution)
+            };
+            let calls = [
+                write("unattributed", json!({})),
+                write(
+                    "refused",
+                    json!({"sessionId": "other", "toolCallId": "call_1"}),
+                ),
+                write("accepted", json!({"sessionId": "child"})),
+                // The rule is for one tool, so other requests need no session.
+                Call {
+                    id: "read",
+                    params: inner(json!({"name": "read"})),
+                    ..Call::new("tools/call", json!({}))
+                },
+                Call::new("tools/list", json!({})),
+            ];
+            let (server_id, responses) = run(version, server, &calls).await;
+            assert_rejected(&responses[0], SESSION_REQUIRED);
+            assert_rejected(
+                &responses[1],
+                "sessionId rejected: the session is not active",
+            );
+            for admitted in &responses[2..] {
+                assert!(admitted["result"]["result"].is_object(), "{admitted}");
+            }
+
+            let seen = seen.lock().unwrap();
+            assert_eq!(
+                seen[1],
+                json!({
+                    "serverId": server_id,
+                    "requestId": "refused",
+                    "method": "tools/call",
+                    "toolName": "write",
+                    "params": inner(json!({"name": "write"})),
+                    "sessionId": "other",
+                    "toolCallId": "call_1",
+                }),
+                "{version:?}"
+            );
+            // Only `tools/call` has a tool name.
+            assert_eq!(seen[4]["method"], "tools/list");
+            assert_eq!(seen[4]["toolName"], Value::Null);
         }
     }
 
-    #[cfg(feature = "unstable_protocol_v2")]
+    /// Each `with_admission` call adds a check. They run in the order they
+    /// were added, and the first rejection answers the request.
     #[tokio::test]
-    async fn v2_service_rejects_a_request_for_its_session() {
-        for (call, expected) in rejection_cases() {
-            assert_body(&call, &v2_call(call.clone()).await, &expected);
+    async fn admission_checks_run_in_the_order_they_were_added() {
+        for &version in VERSIONS {
+            let runs = Arc::new(AtomicUsize::new(0));
+            let server = counting_server(&runs)
+                .with_admission(require_session)
+                .with_admission(|_request| Err(McpRejection::session_rejected("second check")));
+            let calls = [
+                Call::new("tools/call", json!({})),
+                Call::new("tools/call", json!({"sessionId": "child"})),
+            ];
+            let (_, responses) = run(version, server, &calls).await;
+            assert_rejected(&responses[0], SESSION_REQUIRED);
+            assert_rejected(&responses[1], "sessionId rejected: second check");
+            assert_eq!(runs.load(Ordering::SeqCst), 0, "{version:?}");
+        }
+    }
+
+    /// A service's own `admit` runs after the server's checks, and rejects
+    /// the same way.
+    #[tokio::test]
+    async fn service_admits_after_the_checks_of_its_server() {
+        for &version in VERSIONS {
+            let runs = Arc::new(AtomicUsize::new(0));
+            let service = ChildSessionsOnly(Service { runs: runs.clone() });
+            let server = McpServer::new_service("own-rule", service, NullRun)
+                .with_admission(require_session);
+            let calls = [
+                Call::new("tools/call", json!({})),
+                Call::new("tools/call", json!({"sessionId": "other"})),
+                Call::new("tools/call", json!({"sessionId": "child"})),
+            ];
+            let (_, responses) = run(version, server, &calls).await;
+            assert_rejected(&responses[0], SESSION_REQUIRED);
+            assert_rejected(
+                &responses[1],
+                "sessionId rejected: not a session of this service",
+            );
+            assert_eq!(
+                responses[2]["result"]["result"]["sessionId"], "child",
+                "{version:?}"
+            );
+            assert_eq!(runs.load(Ordering::SeqCst), 1, "{version:?}");
+        }
+    }
+
+    /// A rejected request does not reach a connector-based server either.
+    #[tokio::test]
+    async fn admission_check_rejects_before_a_connector_is_asked() {
+        for &version in VERSIONS {
+            let connects = Arc::new(AtomicUsize::new(0));
+            let connector = CountingConnector {
+                connects: connects.clone(),
+            };
+            let server = McpServer::new(connector, NullRun).with_admission(require_session);
+            let calls = [Call::new("tools/call", json!({}))];
+            let (_, responses) = run(version, server, &calls).await;
+            assert_rejected(&responses[0], SESSION_REQUIRED);
+            assert_eq!(connects.load(Ordering::SeqCst), 0, "{version:?}");
+        }
+    }
+
+    /// A malformed inner request is an inner MCP error, as without a check.
+    /// The check is not asked about it.
+    #[tokio::test]
+    async fn admission_check_is_not_asked_about_a_malformed_inner_request() {
+        for &version in VERSIONS {
+            let asked = Arc::new(AtomicUsize::new(0));
+            let server = server().with_admission({
+                let asked = asked.clone();
+                move |_request| {
+                    asked.fetch_add(1, Ordering::SeqCst);
+                    Err(McpRejection::session_required())
+                }
+            });
+            let without_meta = Call {
+                params: json!({}),
+                ..Call::new("tools/call", json!({}))
+            };
+            let (_, responses) = run(version, server, &[without_meta]).await;
+            assert_eq!(responses[0].get("error"), None, "{version:?}");
+            assert_eq!(
+                responses[0]["result"]["error"],
+                json!({
+                    "code": -32602,
+                    "message": "Invalid params",
+                    "data": "inner params._meta must be an object",
+                }),
+                "{version:?}"
+            );
+            assert_eq!(asked.load(Ordering::SeqCst), 0, "{version:?}");
+        }
+    }
+
+    /// An error a service returns is a backend failure, whatever its own
+    /// code is. Only an admission check answers `-32602`.
+    #[tokio::test]
+    async fn service_errors_stay_backend_failures() {
+        let child = json!({"sessionId": "child"});
+        for &version in VERSIONS {
+            let calls = [
+                Call::new("test/fail", child.clone()),
+                Call::new("test/invalid_params", child.clone()),
+            ];
+            let server = server().with_admission(require_session);
+            let (_, responses) = run(version, server, &calls).await;
+            for (response, data) in responses.iter().zip([
+                "Internal error: \"database unavailable\"",
+                "Invalid params: \"from the service\"",
+            ]) {
+                assert_eq!(
+                    response.get("error"),
+                    Some(&json!({
+                        "code": -33002,
+                        "message": "MCP backend failure",
+                        "data": data,
+                    })),
+                    "{version:?}"
+                );
+            }
         }
     }
 }

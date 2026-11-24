@@ -3,13 +3,11 @@
 //! Native-capable successors receive the original declarations and messages unchanged.
 //! HTTP-only successors receive loopback endpoints; no MCP connection or session is created.
 
-mod attribution;
 pub(crate) mod http;
 mod protocol;
 
 use std::{
     collections::HashMap,
-    future::Future,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -28,8 +26,6 @@ use serde_json::Value;
 use tokio::{net::TcpListener, sync::mpsc as tokio_mpsc};
 use tracing::{debug, warn};
 
-use self::attribution::AttributionResolver;
-pub use self::attribution::{McpHttpRequestAttribution, McpHttpRequestInfo};
 use self::protocol::{
     DownstreamMcpMode, NativeMcpNotification, NativeMcpOutcome, PolyfillProtocol,
 };
@@ -106,8 +102,6 @@ enum BridgeMessage {
         http_id: Value,
         method: String,
         params: Option<serde_json::Map<String, Value>>,
-        /// What the host's resolver returned for this request, if anything.
-        attribution: Option<McpHttpRequestAttribution>,
         response_tx: StreamSender,
         terminal_tx: tokio::sync::oneshot::Sender<Value>,
     },
@@ -120,15 +114,11 @@ enum BridgeMessage {
 
 /// Adapts native MCP-over-ACP servers to loopback Streamable HTTP for HTTP-only agents.
 ///
-/// Create one with [`McpOverAcpPolyfill::http`]. To send the session and tool
-/// call of each request, add a resolver with
-/// [`with_attribution`](Self::with_attribution). More configuration may be
-/// added in later releases.
+/// Create one with [`McpOverAcpPolyfill::http`]. Configuration may be added
+/// in later releases.
 #[derive(Debug, Default)]
 #[non_exhaustive]
-pub struct McpOverAcpPolyfill {
-    attribution: Option<AttributionResolver>,
-}
+pub struct McpOverAcpPolyfill;
 
 impl McpOverAcpPolyfill {
     /// Expose native ACP MCP servers as request-scoped loopback HTTP endpoints.
@@ -137,77 +127,7 @@ impl McpOverAcpPolyfill {
     /// lifetime. Native-capable successors keep their original declarations.
     #[must_use]
     pub fn http() -> Self {
-        Self::default()
-    }
-
-    /// Sets the resolver that names the ACP session and tool call of each
-    /// HTTP MCP request.
-    ///
-    /// An HTTP MCP request does not say which ACP session it was sent for.
-    /// Without a resolver, the bridge sends every `mcp/message` request
-    /// without `sessionId` and `toolCallId`, and a provider that needs the
-    /// session can reject it. A host that runs the agent's tools can supply
-    /// both. For example, it records the session of each tool call before the
-    /// tool runs, then looks a request up by the tool-call ID that its MCP
-    /// client puts in `params._meta`.
-    ///
-    /// The bridge calls `resolver` once for each HTTP request that passes its
-    /// header, authentication, and body checks, before it forwards the
-    /// request. It does so in ACP v1 and v2. The values of a returned
-    /// [`McpHttpRequestAttribution`] become the `sessionId` and `toolCallId`
-    /// of that `mcp/message` request. Return `Ok(None)` for a request you
-    /// cannot match. The bridge then sends neither field. Do not infer the
-    /// session from the order or timing of requests, or from the session that
-    /// was active last.
-    ///
-    /// If `resolver` returns an error, the bridge answers the HTTP request
-    /// with status 500 and the JSON-RPC error `-33002`, and forwards nothing.
-    /// It logs the error's code. It does not log or send the error's message
-    /// and data.
-    ///
-    /// The resolver only sees HTTP requests. A successor that supports native
-    /// MCP-over-ACP makes none. It sends `mcp/message` itself, with its own
-    /// attribution.
-    ///
-    /// Calling this method again replaces the resolver.
-    ///
-    /// ```
-    /// use std::{
-    ///     collections::HashMap,
-    ///     sync::{Arc, Mutex},
-    /// };
-    ///
-    /// use agent_client_protocol_polyfill::mcp_over_acp::{
-    ///     McpHttpRequestAttribution, McpOverAcpPolyfill,
-    /// };
-    ///
-    /// // The host fills this when the agent starts a tool call.
-    /// let tool_calls: Arc<Mutex<HashMap<String, McpHttpRequestAttribution>>> = Arc::default();
-    /// tool_calls.lock().unwrap().insert(
-    ///     "toolu_1".into(),
-    ///     McpHttpRequestAttribution::new("sess_child_1").tool_call_id("call_001"),
-    /// );
-    ///
-    /// let polyfill = McpOverAcpPolyfill::http().with_attribution(move |request| {
-    ///     let attribution = request
-    ///         .params
-    ///         .as_ref()
-    ///         .and_then(|params| params.get("_meta")?.get("example.com/toolUseId")?.as_str())
-    ///         .and_then(|tool_use| tool_calls.lock().unwrap().get(tool_use).cloned());
-    ///     std::future::ready(Ok(attribution))
-    /// });
-    /// # drop(polyfill);
-    /// ```
-    #[must_use]
-    pub fn with_attribution<F, Fut>(mut self, resolver: F) -> Self
-    where
-        F: Fn(McpHttpRequestInfo) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Option<McpHttpRequestAttribution>, agent_client_protocol::Error>>
-            + Send
-            + 'static,
-    {
-        self.attribution = Some(AttributionResolver::new(resolver));
-        self
+        Self
     }
 }
 
@@ -220,17 +140,14 @@ impl ConnectTo<Conductor> for McpOverAcpPolyfill {
         {
             Proxy
                 .protocol_router()
-                .with_v1(McpOverAcpProxy(
-                    PolyfillProtocol::V1,
-                    self.attribution.clone(),
-                ))
-                .with_v2(McpOverAcpProxy(PolyfillProtocol::V2, self.attribution))
+                .with_v1(McpOverAcpProxy(PolyfillProtocol::V1))
+                .with_v2(McpOverAcpProxy(PolyfillProtocol::V2))
                 .connect_to(client)
                 .await
         }
         #[cfg(not(feature = "unstable_protocol_v2"))]
         {
-            McpOverAcpProxy(PolyfillProtocol::V1, self.attribution)
+            McpOverAcpProxy(PolyfillProtocol::V1)
                 .connect_to(client)
                 .await
         }
@@ -238,7 +155,7 @@ impl ConnectTo<Conductor> for McpOverAcpPolyfill {
 }
 
 #[derive(Debug)]
-struct McpOverAcpProxy(PolyfillProtocol, Option<AttributionResolver>);
+struct McpOverAcpProxy(PolyfillProtocol);
 
 impl ConnectTo<Conductor> for McpOverAcpProxy {
     async fn connect_to(
@@ -251,7 +168,6 @@ impl ConnectTo<Conductor> for McpOverAcpProxy {
             bridge_rx,
             protocol: None,
             downstream_mode: DownstreamMcpMode::Unknown,
-            attribution: self.1,
             listener: None,
             active: HashMap::new(),
         };
@@ -458,7 +374,6 @@ struct BridgeRunner {
     bridge_rx: mpsc::Receiver<BridgeMessage>,
     protocol: Option<PolyfillProtocol>,
     downstream_mode: DownstreamMcpMode,
-    attribution: Option<AttributionResolver>,
     listener: Option<(u16, Arc<http::BridgeState>)>,
     active: HashMap<String, ActiveRequest>,
 }
@@ -501,7 +416,6 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                     http_id,
                     method,
                     params,
-                    attribution,
                     response_tx,
                     terminal_tx,
                 } => {
@@ -544,7 +458,7 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                         // Dropping the HTTP response stream cancels precisely this ACP request.
                         let result = tokio::select! {
                             result = forward_http_request(cx, protocol, server_id,
-                                request_id_for_task, method, params, attribution) => Some(result),
+                                request_id_for_task, method, params) => Some(result),
                             () = response_tx.closed() => None,
                             _ = cancel_rx => None,
                         };
@@ -680,10 +594,7 @@ impl BridgeRunner {
                             .local_addr()
                             .map_err(agent_client_protocol::Error::into_internal_error)?
                             .port();
-                        let state = http::BridgeState::new(
-                            self.bridge_tx.clone(),
-                            self.attribution.clone(),
-                        );
+                        let state = http::BridgeState::new(self.bridge_tx.clone());
                         connection.spawn(http::run_http_listener(listener, state.clone()))?;
                         self.listener = Some((port, state));
                     }
@@ -709,9 +620,8 @@ async fn forward_http_request(
     request_id: String,
     method: String,
     params: Option<serde_json::Map<String, Value>>,
-    attribution: Option<McpHttpRequestAttribution>,
 ) -> Result<Value, agent_client_protocol::Error> {
-    let request = protocol.message_request(server_id, request_id, method, params, attribution)?;
+    let request = protocol.message_request(server_id, request_id, method, params)?;
     connection
         .send_request_to(Client, request)
         .block_task()
@@ -890,7 +800,6 @@ mod http_limits_tests {
             bridge_rx,
             protocol: None,
             downstream_mode: DownstreamMcpMode::Unknown,
-            attribution: None,
             listener: None,
             active: HashMap::new(),
         };
@@ -924,29 +833,6 @@ mod http_limits_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Adding a resolver must not take away what `McpOverAcpPolyfill` offered
-    /// as a unit struct.
-    #[test]
-    fn polyfill_with_a_resolver_keeps_its_traits() {
-        fn assert_auto_traits<T>(_: &T)
-        where
-            T: Send + Sync + Unpin + std::panic::UnwindSafe + std::panic::RefUnwindSafe + 'static,
-        {
-        }
-
-        let unconfigured = McpOverAcpPolyfill::default();
-        assert_auto_traits(&unconfigured);
-        assert_eq!(
-            format!("{unconfigured:?}"),
-            format!("{:?}", McpOverAcpPolyfill::http())
-        );
-
-        let configured =
-            McpOverAcpPolyfill::http().with_attribution(|_request| std::future::ready(Ok(None)));
-        assert_auto_traits(&configured);
-        assert!(format!("{configured:?}").contains("AttributionResolver"));
-    }
 
     #[test]
     fn mcp_carrier_follows_released_receiver_semantics() {

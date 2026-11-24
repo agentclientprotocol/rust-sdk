@@ -42,56 +42,108 @@ afterwards. See the
 
 ### Rejecting a request for its session
 
-A server that needs the session to run a request calls `require_session_id()`
-in place of `session_id()`. It returns the session ID. When the agent sent
-none, it records a rejection of the `mcp/message` request and returns the
-error. When your own check of a session fails, call `reject_session(reason)`,
-which records a rejection and returns its error. Return the error from the
-service or tool, and make either call before the request does any work.
-
-`McpRequestContext` and `McpConnectionTo` both have the two calls, so they work
-in an `McpService`, in a `tool_fn` or `tool_fn_mut` closure, and
-[in an rmcp handler](#in-an-rmcp-handler):
+A server that needs the session of a request, or that refuses a session after
+its own check, decides that before the request runs. Add an admission check
+to the server with `McpServer::with_admission`:
 
 ```rust,ignore
-// In `McpService::execute`:
-let session_id = context.require_session_id()?;
-if !sessions.is_active(session_id) {
-    return Err(context.reject_session("the session is not active"));
-}
+let server = McpServer::new_service("notes", NotesService::new(), NullRun)
+    .with_admission(move |request| {
+        let session_id = request.require_session_id()?;
+        if !sessions.is_active(session_id) {
+            return Err(McpRejection::session_rejected("the session is not active"));
+        }
+        Ok(())
+    });
+```
 
-// In a `tool_fn` closure:
-async |input: Input, cx: McpConnectionTo<Agent>| {
-    let session_id = cx.require_session_id()?;
+The check receives an `McpAdmission`: the server ID, the request ID, the inner
+`method()` and `params()`, the `tool_name()` of a `tools/call` request, and the
+request's `session_id()` and `tool_call_id()`. `require_session_id()` returns
+the session ID, or `McpRejection::session_required()` to return with `?`. It
+only reads the request. A request is rejected when the check returns an
+`McpRejection`.
+
+- The check runs for every request to the server, such as `tools/call`,
+  `tools/list`, and `server/discover`. It works the same for a service, a
+  connector-based server, an `McpServerBuilder` server, and a `from_rmcp`
+  server, whether the server is attached to one session or to every session of
+  a proxy.
+- It runs after the SDK has checked the inner request's own metadata, and
+  before anything else. A rejected request reaches no service, connector, or
+  tool, and its request ID is not held as active.
+- The agent receives the outer ACP error Invalid params (`-32602`). Its `data`
+  string is `this MCP server requires sessionId on mcp/message` for
+  `McpRejection::session_required()`, and `sessionId rejected: {reason}` for
+  `McpRejection::session_rejected(reason)`.
+- The check is synchronous and runs on the connection's dispatch path. It
+  decides from what the provider already holds in memory, such as its list of
+  active sessions, and must not block.
+- Calling `with_admission` again adds another check. The SDK runs them in the
+  order they were added and answers with the first rejection.
+
+Any `Err` from `McpService::execute` is still a backend failure (`-33002`), and
+any `Err` from a function tool is still a tool result with `isError: true`.
+Neither can reject a request.
+
+A server that rejects every request without a session also rejects the
+requests an agent sends during session setup, and every request from an agent
+that sends no attribution. The
+[HTTP re-export](./mcp-bridge.md#lifecycle-and-failure-behavior) sends none.
+Give the rule to the tools that need it instead:
+
+```rust,ignore
+.with_admission(|request| {
+    if request.tool_name() == Some("add_note") {
+        request.require_session_id()?;
+    }
+    Ok(())
+})
+```
+
+#### Rules of one tool
+
+A tool that the SDK registers can state its rule next to its definition. The
+server evaluates it before a `tools/call` request that names the tool runs,
+after the server's own checks. An `McpTool` implements `admit`:
+
+```rust,ignore
+impl<R: Role> McpTool<R> for AddNote {
     // ...
+
+    fn admit(&self, request: &McpAdmission<'_>) -> Result<(), McpRejection> {
+        request.require_session_id()?;
+        Ok(())
+    }
 }
 ```
 
-The agent receives the outer ACP error Invalid params (`-32602`) with one of
-these `data` strings:
+A `tool_fn` or `tool_fn_mut` tool has no `McpTool` impl of its own. Add its
+rule by name on the rmcp `McpServerBuilder`:
 
-- `this MCP server requires sessionId on mcp/message`, from
-  `require_session_id()` for a request without a session.
-- `sessionId rejected: {reason}`, from `reject_session(reason)`.
+```rust,ignore
+let server = McpServer::builder("notes")
+    .tool_fn("add_note", "Adds a note", add_note, tool_fn!())
+    .tool_admission("add_note", |request| {
+        request.require_session_id()?;
+        Ok(())
+    })?
+    .build();
+```
 
-The recorded error replaces whatever the service or tool returns. That
-includes the `isError` tool result that the `Err` of a function tool becomes.
-The first rejection recorded for a request is the one sent. Any other `Err`
-from `McpService::execute` is still a backend failure (`-33002`), and any
-other `Err` from a function tool is still a tool result with `isError: true`.
+A call of a tool that is not registered or is disabled gets no tool rule. The
+server reports it as it does without admission checks. A hand-written
+`McpService` states its own rule in `McpService::admit`, which also runs after
+the server's checks.
 
-A rejection only replaces the outcome of an operation that ran to its end. A
-request that was stopped before the service or tool returned is answered as if
-no rejection was recorded, for example with Request cancelled (`-32800`) when
-the agent cancelled it, or with `-33001` when its server registration was
-removed.
+The `#[tool]` methods of a `from_rmcp` handler are not registered with the
+SDK. Their rules go in the server's check, by `tool_name()`, as shown above.
 
-A standalone MCP connection has no ACP session and no `mcp/message` request to
-reject. There, `require_session_id()` always returns Invalid params (`-32602`)
-with the `data` string `a standalone MCP connection has no ACP session`, and
-`reject_session(reason)` returns the same error as on an ACP connection.
-Neither call records anything. A function tool that returns the error reports
-it as a tool result with `isError: true`.
+#### Standalone connections
+
+A standalone MCP connection has no `mcp/message` request, so no admission
+check runs for it, and tools see no session. A tool that is also served
+standalone has to handle a call without a session.
 
 #### In an rmcp handler
 
@@ -101,11 +153,8 @@ request from a `McpRequestAttribution`, from the `rmcp_3` module of
 
 ```rust,ignore
 #[tool(description = "Lists the notes of the session")]
-async fn list_notes(
-    &self,
-    attribution: McpRequestAttribution,
-) -> Result<CallToolResult, ErrorData> {
-    let session_id = attribution.require_session_id()?;
+async fn list_notes(&self, attribution: McpRequestAttribution) -> CallToolResult {
+    let session_id = attribution.session_id();
     // ...
 }
 ```
@@ -121,41 +170,14 @@ async fn list_tools(
     context: RequestContext<RoleServer>,
 ) -> Result<ListToolsResult, ErrorData> {
     let attribution = McpRequestAttribution::of(&context);
-    let session_id = attribution.require_session_id()?;
     // ...
 }
 ```
 
-`McpRequestAttribution` has `session_id()`, `tool_call_id()`,
-`require_session_id()`, and `reject_session(reason)`. The last two return an
-rmcp `ErrorData` for the handler to return. A recorded rejection replaces that
-error, as it replaces a tool's result, so the agent receives the outer
-`-32602`.
-
-The same code runs on a standalone connection. There the attribution has no
-session and no tool call, `require_session_id()` returns Invalid params
-(`-32602`) with the message `a standalone MCP connection has no ACP session`,
-and nothing is rejected. The MCP client receives the error the handler
-returns.
-
-A handler that needs the host ACP connection finds the `McpConnectionTo` of
-the request in rmcp's request extensions, with
-`context.extensions.get::<McpConnectionTo<Agent>>()`. Name the role of the
-`McpServer` the handler is passed to: `Agent` for the `McpServer<Agent, _>` a
-client attaches, and `Conductor` for the `McpServer<Conductor, _>` a proxy
-attaches. A lookup with another role returns `None`, and so does every lookup
-on a standalone connection.
-
-`McpServerBuilder` answers `tools/list` and discovery itself, so only its tools
-can require a session. A server that needs the session for `tools/list` or
-discovery is a `from_rmcp` handler that checks in `list_tools` or `discover`,
-or a hand-written `McpService`.
-
-A server that rejects every request without a session also rejects the
-requests an agent sends during session setup, and every request from an agent
-that sends no attribution. The
-[HTTP re-export](./mcp-bridge.md#session-and-tool-call-attribution) sends none
-unless its host supplies it.
+`McpRequestAttribution` has `session_id()` and `tool_call_id()`. It only reads
+the request. To require a session, add an admission check to the server that
+`from_rmcp` returns. On a standalone connection the attribution has no session
+and no tool call.
 
 Use `McpServer::new_service` for native-only execution, or
 `new_service_with_standalone` to also serve a separate standalone transport.

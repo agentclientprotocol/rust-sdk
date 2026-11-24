@@ -13,9 +13,7 @@ use agent_client_protocol::v1::schema::{
 };
 use agent_client_protocol::{Agent, Client, Conductor, ConnectTo, Proxy};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
-use agent_client_protocol_polyfill::mcp_over_acp::{
-    McpHttpRequestAttribution, McpHttpRequestInfo, McpOverAcpPolyfill,
-};
+use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -57,15 +55,11 @@ struct RecordingAgent {
     observed: Arc<ObservedRequests>,
 }
 
-/// The `sessionId` and `toolCallId` of one `mcp/message` request.
-type Attribution = (Option<String>, Option<String>);
-
 #[derive(Default)]
 struct NativeMcpProvider {
     request_count: Arc<AtomicUsize>,
     request_ids: Arc<Mutex<Vec<String>>>,
     cancelled_ids: Arc<Mutex<Vec<String>>>,
-    attributions: Arc<Mutex<Vec<Attribution>>>,
 }
 
 impl ConnectTo<Conductor> for NativeMcpProvider {
@@ -87,10 +81,6 @@ impl ConnectTo<Conductor> for NativeMcpProvider {
                     assert!(uuid::Uuid::parse_str(&request_id).is_ok());
                     self.request_ids.lock().unwrap().push(request_id.clone());
                     self.request_count.fetch_add(1, Ordering::SeqCst);
-                    self.attributions.lock().unwrap().push((
-                        request.session_id.as_ref().map(ToString::to_string),
-                        request.tool_call_id.as_ref().map(ToString::to_string),
-                    ));
                     if request.method == "subscriptions/listen" {
                         assert_eq!(params["notifications"], serde_json::json!({"toolsListChanged":true}));
                         let meta = serde_json::json!({
@@ -134,15 +124,15 @@ impl ConnectTo<Conductor> for NativeMcpProvider {
                             return responder.respond_with_error(agent_client_protocol::Error::internal_error());
                         }
                         // A provider that needs the session to run a request.
-                        "tools/needs-session" => match &request.session_id {
-                            Some(session_id) => serde_json::json!({"session":session_id}),
-                            None => {
-                                return responder.respond_with_error(
-                                    agent_client_protocol::Error::invalid_params()
-                                        .data("this MCP server requires sessionId on mcp/message"),
-                                );
-                            }
-                        },
+                        // The bridge names no session or tool call.
+                        "tools/needs-session" => {
+                            assert_eq!(request.session_id, None);
+                            assert_eq!(request.tool_call_id, None);
+                            return responder.respond_with_error(
+                                agent_client_protocol::Error::invalid_params()
+                                    .data("this MCP server requires sessionId on mcp/message"),
+                            );
+                        }
                         _ => panic!("unexpected fixture method {}", request.method),
                     };
                     responder.respond(serde_json::from_value::<MessageMcpResponse>(
@@ -243,17 +233,12 @@ async fn open_post(
         .split_once('/')
         .unwrap();
     let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
-    // Keep the `_meta` keys a test supplies, as the host of an MCP client would.
-    let host_meta = params["_meta"].take();
     params["_meta"] = serde_json::json!({
         "io.modelcontextprotocol/protocolVersion":"2026-07-28",
         "io.modelcontextprotocol/clientCapabilities":{},
         "io.modelcontextprotocol/clientInfo":{"name":"http-fixture","version":"1"},
         "progressToken":"unchanged"
     });
-    if let serde_json::Value::Object(host_meta) = host_meta {
-        params["_meta"].as_object_mut().unwrap().extend(host_meta);
-    }
     let body =
         serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}).to_string();
     let name = params
@@ -356,17 +341,6 @@ async fn run_with_provider(
         agent_client_protocol::v1::ConnectionTo<Agent>,
     ) -> Result<(), agent_client_protocol::Error>,
 ) -> Result<(), agent_client_protocol::Error> {
-    run_chain(agent, provider, McpOverAcpPolyfill::http(), editor_task).await
-}
-
-async fn run_chain(
-    agent: RecordingAgent,
-    provider: NativeMcpProvider,
-    polyfill: McpOverAcpPolyfill,
-    editor_task: impl AsyncFnOnce(
-        agent_client_protocol::v1::ConnectionTo<Agent>,
-    ) -> Result<(), agent_client_protocol::Error>,
-) -> Result<(), agent_client_protocol::Error> {
     drop(
         tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -386,7 +360,9 @@ async fn run_chain(
         .with_spawned(|_cx| async move {
             ConductorImpl::new_agent(
                 "polyfill-test-conductor".to_string(),
-                ProxiesAndAgent::new(agent).proxy(provider).proxy(polyfill),
+                ProxiesAndAgent::new(agent)
+                    .proxy(provider)
+                    .proxy(McpOverAcpPolyfill::http()),
             )
             .run(agent_client_protocol::ByteStreams::new(
                 conductor_out.compat_write(),
@@ -727,19 +703,40 @@ async fn direct_v1_calls_preserve_inner_errors_without_hidden_listing()
             .await;
             assert_eq!(outer_error["id"], 7);
             assert_eq!(outer_error["error"]["code"], -33002);
+            // A provider that needs the session rejects the request with
+            // `-32602`. The MCP client's own params are fine, so it sees a
+            // binding failure that keeps the provider's reason.
+            let rejected = post_json(
+                &url,
+                &bearer,
+                serde_json::json!(8),
+                "tools/needs-session",
+                serde_json::json!({}),
+            )
+            .await;
+            assert_eq!(
+                rejected,
+                serde_json::json!({
+                    "jsonrpc":"2.0","id":8,
+                    "error":{
+                        "code":-33002,"message":"Invalid params",
+                        "data":"this MCP server requires sessionId on mcp/message"
+                    }
+                })
+            );
             Ok(())
         },
     )
     .await?;
     assert_eq!(
         count.load(Ordering::SeqCst),
-        3,
+        4,
         "no hidden tools/list or handshake"
     );
     let ids = ids.lock().unwrap();
     assert_eq!(
         ids.iter().collect::<std::collections::HashSet<_>>().len(),
-        3
+        4
     );
     Ok(())
 }
@@ -842,214 +839,4 @@ async fn v1_subscriptions_use_filter_and_ack_with_independent_stream_cancellatio
         },
     )
     .await
-}
-
-/// What a host that recorded two tool calls returns for `request`. It finds
-/// the tool call by the tool-use ID its MCP client sends in `_meta`.
-fn recorded_attribution(request: &McpHttpRequestInfo) -> Option<McpHttpRequestAttribution> {
-    let meta = request.params.as_ref()?.get("_meta")?;
-    match meta.get("example.com/toolUseId")?.as_str()? {
-        "toolu_1" => Some(McpHttpRequestAttribution::new("sess_child_1").tool_call_id("call_001")),
-        "toolu_2" => Some(McpHttpRequestAttribution::new("sess_root")),
-        _ => None,
-    }
-}
-
-/// A polyfill for that host. `asked` collects what the resolver was called
-/// with.
-fn polyfill_with_attribution(asked: Arc<Mutex<Vec<McpHttpRequestInfo>>>) -> McpOverAcpPolyfill {
-    McpOverAcpPolyfill::http().with_attribution(move |request| {
-        let attribution = recorded_attribution(&request);
-        asked.lock().unwrap().push(request);
-        std::future::ready(Ok(attribution))
-    })
-}
-
-/// The bridge sends the session and tool call that the host's resolver
-/// returns. It sends neither for a request the host cannot match, and for
-/// every request when there is no resolver.
-#[tokio::test]
-async fn v1_http_requests_carry_only_the_attribution_the_host_supplies()
--> Result<(), agent_client_protocol::Error> {
-    for with_resolver in [true, false] {
-        let observed = Arc::new(ObservedRequests::default());
-        let attributions = Arc::new(Mutex::new(Vec::new()));
-        let asked = Arc::new(Mutex::new(Vec::new()));
-        let agent = RecordingAgent {
-            capabilities: agent_capabilities(McpCapabilities::new().http(true)),
-            observed: observed.clone(),
-        };
-        let polyfill = if with_resolver {
-            polyfill_with_attribution(asked.clone())
-        } else {
-            McpOverAcpPolyfill::http()
-        };
-        run_chain(
-            agent,
-            NativeMcpProvider {
-                attributions: attributions.clone(),
-                ..Default::default()
-            },
-            polyfill,
-            async |connection| {
-                recv(connection.send_request(InitializeRequest::new(ProtocolVersion::V1))).await?;
-                recv(
-                    connection.send_request(
-                        NewSessionRequest::new(PathBuf::from("/tmp"))
-                            .mcp_servers(vec![native_server()]),
-                    ),
-                )
-                .await?;
-                let (url, bearer) = {
-                    let observed = observed.setup.lock().unwrap();
-                    let McpServer::Http(server) = &observed[0].mcp_servers[0] else {
-                        panic!("expected HTTP")
-                    };
-                    (server.url.clone(), server.headers[0].value.clone())
-                };
-                for tool_use in ["toolu_1", "toolu_2", "toolu_unknown"] {
-                    let call = post_json(
-                        &url,
-                        &bearer,
-                        serde_json::json!(tool_use),
-                        "tools/call",
-                        serde_json::json!({
-                            "name":"ping","arguments":{"text":"hello"},
-                            "_meta":{"example.com/toolUseId":tool_use}
-                        }),
-                    )
-                    .await;
-                    assert!(call["result"].is_object(), "{tool_use}");
-                }
-                // A provider that needs the session rejects a request without
-                // one with `-32602`. The MCP client sees that outer error as a
-                // binding failure that keeps the provider's reason.
-                let needs_session = post_json(
-                    &url,
-                    &bearer,
-                    serde_json::json!(4),
-                    "tools/needs-session",
-                    serde_json::json!({"_meta":{"example.com/toolUseId":"toolu_1"}}),
-                )
-                .await;
-                if with_resolver {
-                    assert_eq!(
-                        needs_session["result"],
-                        serde_json::json!({"session":"sess_child_1"})
-                    );
-                } else {
-                    assert_eq!(
-                        needs_session,
-                        serde_json::json!({
-                            "jsonrpc":"2.0","id":4,
-                            "error":{
-                                "code":-33002,"message":"Invalid params",
-                                "data":"this MCP server requires sessionId on mcp/message"
-                            }
-                        })
-                    );
-                }
-                Ok(())
-            },
-        )
-        .await?;
-
-        let child = (
-            Some("sess_child_1".to_string()),
-            Some("call_001".to_string()),
-        );
-        let expected = if with_resolver {
-            vec![
-                child.clone(),
-                (Some("sess_root".to_string()), None),
-                (None, None),
-                child,
-            ]
-        } else {
-            vec![(None, None); 4]
-        };
-        assert_eq!(*attributions.lock().unwrap(), expected);
-
-        let asked = asked.lock().unwrap();
-        assert_eq!(asked.len(), if with_resolver { 4 } else { 0 });
-        if let Some(first) = asked.first() {
-            assert_eq!(first.server_id, SERVER_ID);
-            assert_eq!(first.method, "tools/call");
-            let params = first.params.as_ref().expect("inner params");
-            assert_eq!(params["name"], "ping");
-            assert_eq!(params["_meta"]["example.com/toolUseId"], "toolu_1");
-        }
-    }
-    Ok(())
-}
-
-/// A resolver that fails ends the HTTP request with status 500 and `-33002`,
-/// and the provider receives no request.
-#[tokio::test]
-async fn v1_failing_attribution_resolver_fails_the_http_request()
--> Result<(), agent_client_protocol::Error> {
-    let observed = Arc::new(ObservedRequests::default());
-    let request_count = Arc::new(AtomicUsize::new(0));
-    let agent = RecordingAgent {
-        capabilities: agent_capabilities(McpCapabilities::new().http(true)),
-        observed: observed.clone(),
-    };
-    let polyfill = McpOverAcpPolyfill::http().with_attribution(|_request| {
-        std::future::ready(Err(agent_client_protocol::Error::internal_error()))
-    });
-    run_chain(
-        agent,
-        NativeMcpProvider {
-            request_count: request_count.clone(),
-            ..Default::default()
-        },
-        polyfill,
-        async |connection| {
-            recv(connection.send_request(InitializeRequest::new(ProtocolVersion::V1))).await?;
-            recv(connection.send_request(
-                NewSessionRequest::new(PathBuf::from("/tmp")).mcp_servers(vec![native_server()]),
-            ))
-            .await?;
-            let (url, bearer) = {
-                let observed = observed.setup.lock().unwrap();
-                let McpServer::Http(server) = &observed[0].mcp_servers[0] else {
-                    panic!("expected HTTP")
-                };
-                (server.url.clone(), server.headers[0].value.clone())
-            };
-            let mut stream = open_post(
-                &url,
-                &bearer,
-                serde_json::json!(7),
-                "tools/list",
-                serde_json::json!({}),
-            )
-            .await;
-            let mut response = String::new();
-            tokio::time::timeout(
-                std::time::Duration::from_secs(3),
-                stream.read_to_string(&mut response),
-            )
-            .await
-            .expect("HTTP response should finish")
-            .unwrap();
-            assert!(
-                response.starts_with("HTTP/1.1 500"),
-                "expected HTTP status 500"
-            );
-            let body: serde_json::Value =
-                serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-            assert_eq!(
-                body,
-                serde_json::json!({
-                    "jsonrpc":"2.0","id":7,
-                    "error":{"code":-33002,"message":"MCP attribution resolver failed"}
-                })
-            );
-            Ok(())
-        },
-    )
-    .await?;
-    assert_eq!(request_count.load(Ordering::SeqCst), 0);
-    Ok(())
 }

@@ -219,8 +219,9 @@ of your own. See [Schema 1.21](./protocol-v2.md#schema-121).
 
 Schema 1.22 adds no feature. Under `unstable_mcp_over_acp`, an `mcp/message`
 request can name the session and tool call it was sent for. An MCP service
-reads them from its request context and can reject a request for its session.
-See [Schema 1.22](./protocol-v2.md#schema-122).
+reads them from its request context, and a server's admission check can reject
+a request for its session before it runs. See
+[Schema 1.22](./protocol-v2.md#schema-122).
 
 The schema's `unstable_proxy_chains` feature is not an SDK feature: the SDK
 always enables it, because the `Proxy` and `Conductor` roles and the conductor
