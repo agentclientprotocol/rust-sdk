@@ -1,7 +1,7 @@
 use crate::{ConnectionTo, role::Role};
 
 #[cfg(feature = "unstable_mcp_over_acp")]
-use crate::v1::schema::{McpRequestId, McpServerAcpId};
+use crate::v1::schema::{McpRequestId, McpServerAcpId, SessionId, ToolCallId};
 #[cfg(feature = "unstable_mcp_over_acp")]
 use futures::channel::oneshot;
 #[cfg(feature = "unstable_mcp_over_acp")]
@@ -23,6 +23,14 @@ pub enum McpConnectionContext {
 
         /// The logical identifier of this independent MCP request.
         request_id: McpRequestId,
+
+        /// The session the Agent says this request was sent for, if it
+        /// supplied one. The SDK does not check it.
+        session_id: Option<SessionId>,
+
+        /// The tool call in that session that the Agent says this request
+        /// is part of, if it supplied one.
+        tool_call_id: Option<ToolCallId>,
     },
 }
 
@@ -54,6 +62,39 @@ impl McpConnectionContext {
         match self {
             Self::Standalone => None,
             Self::Acp { request_id, .. } => Some(request_id),
+        }
+    }
+
+    /// The session the Agent says this request was sent for.
+    ///
+    /// Returns `None` for a standalone MCP connection, and when the Agent
+    /// supplied no session. For a child session's work this is the child's ID.
+    ///
+    /// The SDK does not check the value. Before you use it to choose what a
+    /// request acts on, check that the session is active on the connection, or
+    /// is a child that the Agent announced for an active session, and that this
+    /// server was declared to it or to one of its ancestors.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[must_use]
+    pub fn session_id(&self) -> Option<&SessionId> {
+        match self {
+            Self::Standalone => None,
+            Self::Acp { session_id, .. } => session_id.as_ref(),
+        }
+    }
+
+    /// The tool call, in the session returned by `session_id`, that the Agent
+    /// says this request is part of.
+    ///
+    /// Returns `None` for a standalone MCP connection, and when the Agent
+    /// supplied no tool call. The Agent can report the tool call after it
+    /// sends the request, so the ID might not be known yet.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[must_use]
+    pub fn tool_call_id(&self) -> Option<&ToolCallId> {
+        match self {
+            Self::Standalone => None,
+            Self::Acp { tool_call_id, .. } => tool_call_id.as_ref(),
         }
     }
 }
@@ -109,6 +150,33 @@ impl<Counterpart: Role> McpConnectionTo<Counterpart> {
         self.context.request_id()
     }
 
+    /// The session the Agent says this request was sent for.
+    ///
+    /// Returns `None` for a standalone MCP connection, and when the Agent
+    /// supplied no session. For a child session's work this is the child's ID.
+    ///
+    /// The SDK does not check the value. Before you use it to choose what a
+    /// request acts on, check that the session is active on the connection, or
+    /// is a child that the Agent announced for an active session, and that this
+    /// server was declared to it or to one of its ancestors.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[must_use]
+    pub fn session_id(&self) -> Option<&SessionId> {
+        self.context.session_id()
+    }
+
+    /// The tool call, in the session returned by `session_id`, that the Agent
+    /// says this request is part of.
+    ///
+    /// Returns `None` for a standalone MCP connection, and when the Agent
+    /// supplied no tool call. The Agent can report the tool call after it
+    /// sends the request, so the ID might not be known yet.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[must_use]
+    pub fn tool_call_id(&self) -> Option<&ToolCallId> {
+        self.context.tool_call_id()
+    }
+
     /// Borrow the host protocol connection.
     ///
     /// For an ACP-attached server, this is its host ACP connection. For a
@@ -133,23 +201,31 @@ mod tests {
         {
             assert_eq!(context.server_id(), None);
             assert_eq!(context.request_id(), None);
+            assert_eq!(context.session_id(), None);
+            assert_eq!(context.tool_call_id(), None);
         }
     }
 
     #[cfg(feature = "unstable_mcp_over_acp")]
     #[test]
     fn acp_context_exposes_server_and_request_ids() {
-        use crate::v1::schema::{McpRequestId, McpServerAcpId};
+        use crate::v1::schema::{McpRequestId, McpServerAcpId, SessionId, ToolCallId};
 
         let server_id = McpServerAcpId::new("server-id");
         let request_id = McpRequestId::new("request-id");
+        let session_id = SessionId::new("session-id");
+        let tool_call_id = ToolCallId::new("tool-call-id");
         let context = McpConnectionContext::Acp {
             server_id: server_id.clone(),
             request_id: request_id.clone(),
+            session_id: Some(session_id.clone()),
+            tool_call_id: Some(tool_call_id.clone()),
         };
 
         assert!(!context.is_standalone());
         assert_eq!(context.server_id(), Some(&server_id));
         assert_eq!(context.request_id(), Some(&request_id));
+        assert_eq!(context.session_id(), Some(&session_id));
+        assert_eq!(context.tool_call_id(), Some(&tool_call_id));
     }
 }

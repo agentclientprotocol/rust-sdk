@@ -216,6 +216,12 @@ The logical ID stays stable through proxies; the outer ACP ID is hop-local.
 Each inner request declares its version and capabilities. This binding exposes
 MCP 2026-07-28 only, without `initialize` or a discovery prerequisite.
 
+A request can also carry `sessionId` and `toolCallId`, which name the session
+and tool call the agent sent it for. Both are optional, and `toolCallId` is
+only sent with `sessionId`. A provider can use `sessionId` to choose which
+session a request acts on, and can reject a request that has none with
+`-32602`. See the [RFD](https://agentclientprotocol.com/rfds/mcp-over-acp#session-and-tool-call-attribution).
+
 ```json
 {
   "jsonrpc": "2.0",

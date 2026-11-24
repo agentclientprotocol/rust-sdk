@@ -682,7 +682,7 @@ The reuse probe is conservative: if parsing and serializing the raw v2 request
 would change any parameter, reuse is disabled and fallback opens a fresh
 connection. That does not turn an otherwise valid v2 request into an error.
 
-## Schema changes in schema 1.5 through 1.21
+## Schema changes in schema 1.5 through 1.22
 
 The `unstable_protocol_v2` API follows the v2 schema as it changes. Schema 1.5 added
 semantic newtypes for paths, media types, IDs, and cursors, renamed
@@ -1486,3 +1486,56 @@ fields the same way. Names, titles, and every other `description`, such as
 those in an elicitation form, are still plain text.
 
 There are no new rules for agents. An agent can use Markdown in these fields.
+
+### Schema 1.22
+
+Schema 1.22 adds two fields to one unstable request and makes two v1 payloads
+fail to parse.
+
+With `unstable_mcp_over_acp`, a `MessageMcpRequest` can name the session and
+tool call it was sent for, in `v1::schema` and `v2::schema`: `session_id` and
+`tool_call_id`. Both are optional. See the [RFD](https://agentclientprotocol.com/rfds/mcp-over-acp#session-and-tool-call-attribution).
+
+For a client or proxy that provides an MCP server:
+
+- `McpRequestContext::session_id()` and `tool_call_id()` return what the agent
+  sent. `McpConnectionTo` and `McpConnectionContext` have the same accessors,
+  so a `tool_fn` closure can read them from its connection.
+- The SDK does not check the values. Before a tool uses the session to choose
+  what it acts on, check that the session is active on the connection, or is a
+  child the agent announced for an active session, and that the server was
+  declared to it or to one of its ancestors.
+- Handle `None`. A request the agent sends during session setup has no
+  session, and an agent that cannot tell which session a request belongs to
+  omits it.
+- Do not reject or delay a request because you have not seen its tool call.
+  The agent can report the call after it sends the request.
+- A service cannot yet reject a request with `-32602`. An error returned from
+  `McpService::execute` is reported as a backend failure (`-33002`).
+
+For an agent that calls a server:
+
+- Set the fields with `MessageMcpRequest::session_id` and `tool_call_id`. Use
+  the IDs you send on `session/update` for that work. A child session's request
+  carries the child's ID.
+- Omit a value you do not know. Do not send the root session's ID or the
+  latest tool call's ID in its place, and do not send `tool_call_id` without
+  `session_id`.
+- Report the tool call before you send the request that names it, when you
+  can.
+- The MCP polyfill's HTTP bridge sends neither field. An MCP HTTP request does
+  not say which session or tool call it belongs to.
+
+Two malformed v1 payloads no longer parse, so an agent built on the SDK answers
+Invalid params (`-32602`) instead of acting on them:
+
+- An MCP server whose `type` is `http` or `sse` and that fails that
+  transport's schema. It was read as a stdio server when it also had a
+  `command`. A server with no `type`, or with `"type": "stdio"`, is still a
+  stdio server.
+- A config value with `"type": "boolean"` and a string `value`, in
+  `session/set_config_option` and, under `unstable_session_options`, in the
+  `configOptions` of a session setup request. It was read as the ID of a
+  select value.
+
+Neither needs a code change. The v2 changes in this release are wording only.

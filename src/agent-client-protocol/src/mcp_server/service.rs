@@ -14,7 +14,7 @@ use serde_json::{Map, Value};
 use super::McpConnectionTo;
 use crate::{
     Error, RequestCancellation, Role,
-    v1::schema::{McpError, McpRequestId, McpServerAcpId},
+    v1::schema::{McpError, McpRequestId, McpServerAcpId, SessionId, ToolCallId},
 };
 
 /// One MCP invocation against a reusable service.
@@ -145,6 +145,27 @@ impl<Counterpart: Role> McpRequestContext<Counterpart> {
     /// Logical request identifier, held until cleanup and terminal output finish.
     pub fn request_id(&self) -> &McpRequestId {
         &self.request_id
+    }
+    /// The session the Agent says this request was sent for.
+    ///
+    /// Returns `None` for a standalone MCP connection, and when the Agent
+    /// supplied no session. For a child session's work this is the child's ID.
+    ///
+    /// The SDK does not check the value. Before you use it to choose what a
+    /// request acts on, check that the session is active on the connection, or
+    /// is a child that the Agent announced for an active session, and that this
+    /// server was declared to it or to one of its ancestors.
+    pub fn session_id(&self) -> Option<&SessionId> {
+        self.connection.session_id()
+    }
+    /// The tool call, in the session returned by `session_id`, that the Agent
+    /// says this request is part of.
+    ///
+    /// Returns `None` for a standalone MCP connection, and when the Agent
+    /// supplied no tool call. The Agent can report the tool call after it
+    /// sends the request, so the ID might not be known yet.
+    pub fn tool_call_id(&self) -> Option<&ToolCallId> {
+        self.connection.tool_call_id()
     }
     /// Host connection for application tools.
     pub fn connection(&self) -> &McpConnectionTo<Counterpart> {
