@@ -1500,7 +1500,10 @@ For a client or proxy that provides an MCP server:
 
 - `McpRequestContext::session_id()` and `tool_call_id()` return what the agent
   sent. `McpConnectionTo` and `McpConnectionContext` have the same accessors,
-  so a `tool_fn` closure can read them from its connection.
+  so a `tool_fn` closure can read them from its connection. An rmcp
+  `ServerHandler` passed to `from_rmcp` reads them from a
+  `McpRequestAttribution`: a parameter of a `#[tool]` method, or
+  `McpRequestAttribution::of(&context)` in a method it writes itself.
 - The SDK does not check the values. Before a tool uses the session to choose
   what it acts on, check that the session is active on the connection, or is a
   child the agent announced for an active session, and that the server was
@@ -1510,8 +1513,22 @@ For a client or proxy that provides an MCP server:
   omits it.
 - Do not reject or delay a request because you have not seen its tool call.
   The agent can report the call after it sends the request.
-- A service cannot yet reject a request with `-32602`. An error returned from
-  `McpService::execute` is reported as a backend failure (`-33002`).
+- A server that needs the session, or refuses one after its own check, rejects
+  the request before it runs. Add an admission check with
+  `McpServer::with_admission`. It is an async closure, passed with
+  `mcp_admission!()`, that receives an `McpAdmission` and returns an
+  `McpRejection`, such as
+  `McpRejection::session_required()` from `require_session_id()?`, or
+  `McpRejection::session_rejected(reason)`. The agent receives Invalid params
+  (`-32602`), and no service, connector, or tool runs. The check works for
+  every kind of server and every method, including `tools/list` and
+  `server/discover`.
+- A tool can state its own rule: `McpTool::admit`, or `tool_admission` on the
+  rmcp `McpServerBuilder` for a `tool_fn` or `tool_fn_mut` tool. See
+  [Rejecting a request for its session](./mcp-over-acp.md#rejecting-a-request-for-its-session).
+- An error returned from `McpService::execute` is still reported as a backend
+  failure (`-33002`), and an error from a function tool is still a tool result
+  with `isError: true`. Neither rejects a request.
 
 For an agent that calls a server:
 

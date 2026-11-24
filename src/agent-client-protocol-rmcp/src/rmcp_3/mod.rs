@@ -48,6 +48,7 @@ use futures_concurrency::future::TryJoin as _;
 use rmcp::ServiceExt;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+mod attribution;
 mod builder;
 
 // The native MCP-over-ACP path follows the core crate's
@@ -57,6 +58,7 @@ mod builder;
 agent_client_protocol::__if_mcp_over_acp! {
     {
         mod native;
+        pub use agent_client_protocol::mcp_admission;
         use agent_client_protocol::mcp_server::{McpOutcome, McpRequest, McpRequestContext, McpService};
         use futures::future::BoxFuture;
         use std::sync::{Arc, OnceLock};
@@ -65,6 +67,7 @@ agent_client_protocol::__if_mcp_over_acp! {
 
 pub use agent_client_protocol::mcp_server::{McpTool, UnknownToolError};
 pub use agent_client_protocol::{tool_fn, tool_fn_mut};
+pub use attribution::McpRequestAttribution;
 pub use builder::McpServerBuilder;
 
 mod sealed {
@@ -89,6 +92,51 @@ pub trait McpServerExt<Counterpart: Role>: sealed::Sealed {
     /// Native ACP requests lazily share one application service. Standalone
     /// connections invoke the factory independently and retain their ordinary
     /// MCP lifecycle.
+    ///
+    /// # The session and tool call of a request
+    ///
+    /// A handler reads the ACP session and tool call of a request from a
+    /// [`McpRequestAttribution`]. A `#[tool]` method takes it as a parameter:
+    ///
+    /// ```ignore
+    /// #[tool(description = "Lists the notes of the session")]
+    /// async fn list_notes(&self, attribution: McpRequestAttribution) -> CallToolResult {
+    ///     let session_id = attribution.session_id();
+    ///     // ...
+    /// }
+    /// ```
+    ///
+    /// A `ServerHandler` method you write yourself gets it with
+    /// [`McpRequestAttribution::of`], in any method that receives a
+    /// `RequestContext`:
+    ///
+    /// ```ignore
+    /// let attribution = McpRequestAttribution::of(&context);
+    /// ```
+    ///
+    /// On a standalone connection the attribution has no session and no tool
+    /// call.
+    ///
+    /// # Requiring a session
+    ///
+    /// A server that needs the session of a request rejects a request without
+    /// one before the handler runs. With the core crate's
+    /// `unstable_mcp_over_acp` feature, add the check with
+    /// `McpServer::with_admission` on the server this returns. The SDK does
+    /// not know the handler's `#[tool]` methods, so a rule for one tool goes
+    /// in that check, by `tool_name()`:
+    ///
+    /// ```ignore
+    /// let server = McpServer::from_rmcp("notes", Notes::new).with_admission(
+    ///     async |request| {
+    ///         if request.tool_name() == Some("list_notes") {
+    ///             request.require_session_id()?;
+    ///         }
+    ///         Ok(())
+    ///     },
+    ///     agent_client_protocol_rmcp::rmcp_3::mcp_admission!(),
+    /// );
+    /// ```
     ///
     /// # See also
     ///

@@ -122,6 +122,17 @@ pub(super) fn rpc_result(id: Value, request_id: &str, mut result: Value) -> Valu
     serde_json::json!({"jsonrpc":"2.0", "id":id, "result":result})
 }
 
+/// Projects an outer ACP failure of `mcp/message` for the HTTP client.
+///
+/// The binding's own codes and Request cancelled (`-32800`) pass through.
+/// Every other code becomes `-33002` with the ACP error's message, and no
+/// error keeps its `data`.
+///
+/// A `-32602` gets a message of its own. A provider answers that code for the
+/// ACP envelope, such as a session it needs or refuses. To the HTTP client
+/// `-32602` would mean that its own MCP params are invalid, and a model that
+/// reads "Invalid params" retries with other tool arguments. The message says
+/// that the server refused the request, and gives the provider's reason.
 pub(super) fn rpc_binding_error(id: Value, error: Error) -> Value {
     let value = serde_json::to_value(error).unwrap_or(Value::Null);
     let peer_code = value.get("code").and_then(Value::as_i64);
@@ -133,7 +144,36 @@ pub(super) fn rpc_binding_error(id: Value, error: Error) -> Value {
         .get("message")
         .and_then(Value::as_str)
         .unwrap_or("MCP binding failure");
+    if peer_code == Some(-32602) {
+        return rpc_error(id, code, &refusal_message(message, value.get("data")));
+    }
     rpc_error(id, code, message)
+}
+
+/// The message for a request a provider refused with `-32602`.
+///
+/// The reason is the error's `data` when that is a string with more than
+/// whitespace in it, and otherwise its message without the leading "Invalid
+/// params". It is trimmed and loses one trailing period. Without a reason,
+/// the sentence that gives it is left out.
+fn refusal_message(message: &str, data: Option<&Value>) -> String {
+    let reason = match data.and_then(Value::as_str).map(str::trim) {
+        Some(data) if !data.is_empty() => data,
+        _ if message == "Invalid params" => "",
+        _ => message.strip_prefix("Invalid params: ").unwrap_or(message),
+    };
+    let reason = reason.trim();
+    let reason = reason.strip_suffix('.').unwrap_or(reason);
+    if reason.is_empty() {
+        "The MCP server refused this request before running it. \
+         Changing the tool arguments will not help."
+            .to_owned()
+    } else {
+        format!(
+            "The MCP server refused this request before running it. Reason: {reason}. \
+             Changing the tool arguments will not help."
+        )
+    }
 }
 
 pub(super) fn rpc_peer_error(id: Value, error: Value) -> Value {
@@ -1225,5 +1265,81 @@ mod tests {
             "invalid HTTP requests must not reach ACP"
         );
         task.abort();
+    }
+
+    #[test]
+    fn binding_errors_word_a_refusal_and_keep_no_data() {
+        let project = |error: Error| rpc_binding_error(serde_json::json!("external"), error);
+        let binding_error = |code: i64, message: &str| {
+            serde_json::json!({
+                "jsonrpc":"2.0","id":"external","error":{"code":code,"message":message}
+            })
+        };
+        let refused = |reason: &str| {
+            binding_error(
+                -33002,
+                &format!(
+                    "The MCP server refused this request before running it. \
+                     Reason: {reason}. Changing the tool arguments will not help."
+                ),
+            )
+        };
+        let refused_without_reason = binding_error(
+            -33002,
+            "The MCP server refused this request before running it. \
+             Changing the tool arguments will not help.",
+        );
+
+        // A provider's `-32602` is not about the HTTP client's own params. The
+        // reason is the error's `data` string.
+        for reason in [
+            "this MCP server requires sessionId on mcp/message",
+            "sessionId rejected: the session is not active",
+        ] {
+            assert_eq!(
+                project(Error::invalid_params().data(reason)),
+                refused(reason)
+            );
+        }
+        // It is trimmed and loses one trailing period.
+        assert_eq!(
+            project(Error::invalid_params().data("  the session ended.  ")),
+            refused("the session ended")
+        );
+        // Without a `data` string, or with a blank one, the reason is the
+        // message, without the leading "Invalid params".
+        for data in [
+            None,
+            Some(serde_json::json!("")),
+            Some(serde_json::json!("   ")),
+            Some(serde_json::json!({"json":"PRIVATE"})),
+        ] {
+            let mut error = Error::new(-32602, "Invalid params: the server needs a session.");
+            error.data = data;
+            assert_eq!(project(error), refused("the server needs a session"));
+        }
+        assert_eq!(
+            project(Error::new(-32602, "no session")),
+            refused("no session")
+        );
+        // With no reason left, the sentence that gives it is left out.
+        assert_eq!(project(Error::invalid_params()), refused_without_reason);
+        assert_eq!(
+            project(Error::invalid_params().data(serde_json::json!({"json":"PRIVATE"}))),
+            refused_without_reason
+        );
+
+        // Every other error keeps its message and no data, whether its code
+        // passes through or becomes `-33002`.
+        assert_eq!(
+            project(Error::internal_error().data("PRIVATE")),
+            binding_error(-33002, "Internal error")
+        );
+        for code in [-33000, -33001, -33002, -32800] {
+            assert_eq!(
+                project(Error::new(code, "passes through").data("PRIVATE")),
+                binding_error(code.into(), "passes through")
+            );
+        }
     }
 }

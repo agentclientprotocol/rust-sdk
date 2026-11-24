@@ -40,6 +40,47 @@ enabled. To attach a native MCP server to draft ACP v2, also enable
 Native attachments lazily initialize one shared rmcp application service.
 Standalone connections still invoke the factory separately. Each native
 request owns its metadata, notifications, cancellation, and supervised cleanup.
+A `tool_fn` closure reads the session and tool call of a request from its
+`McpConnectionTo`. A `ServerHandler` passed to `from_rmcp` reads them from a
+`McpRequestAttribution`. A `#[tool]` method takes it as a parameter:
+
+```rust,ignore
+#[tool(description = "Lists the notes of the session")]
+async fn list_notes(&self, attribution: McpRequestAttribution) -> CallToolResult {
+    let session_id = attribution.session_id();
+    // ...
+}
+```
+
+A `ServerHandler` method you write yourself gets it from its `RequestContext`,
+with `McpRequestAttribution::of(&context)`. On a standalone connection the
+attribution has no session.
+
+A server that needs the session of a request rejects a request without one
+before any tool runs. Add an admission check with `McpServer::with_admission`,
+or give one tool its own rule: `McpTool::admit`, or `tool_admission` on the
+builder for a `tool_fn` or `tool_fn_mut` tool. A check is an async closure.
+Like `tool_fn`, the method takes a macro as its last argument, here
+`mcp_admission!()` from the `rmcp_3` module.
+
+```rust,ignore
+let server = McpServer::builder("notes")
+    .tool_fn("add_note", "Adds a note", add_note, tool_fn!())
+    .tool_admission(
+        "add_note",
+        async |request| {
+            request.require_session_id()?;
+            Ok(())
+        },
+        mcp_admission!(),
+    )?
+    .build();
+```
+
+The agent receives Invalid params (`-32602`) for a rejected request. The SDK
+does not know the `#[tool]` methods of a `from_rmcp` handler, so their rules go
+in the server's check, by `request.tool_name()`.
+
 Run the direct ACP example with:
 
 ```sh

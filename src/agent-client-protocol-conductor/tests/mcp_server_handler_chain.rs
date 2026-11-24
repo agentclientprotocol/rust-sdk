@@ -9,16 +9,18 @@ use agent_client_protocol::mcp_server::McpServer;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::schema::{
     AgentCapabilities, InitializeRequest, InitializeResponse, LoadSessionRequest,
-    LoadSessionResponse, McpServer as SchemaMcpServer, McpServerAcpId, NewSessionRequest,
-    NewSessionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionId,
+    LoadSessionResponse, McpServer as SchemaMcpServer, McpServerAcpId, MessageMcpRequest,
+    MessageMcpResponse, NewSessionRequest, NewSessionResponse, ResumeSessionRequest,
+    ResumeSessionResponse, SessionId,
 };
 use agent_client_protocol::{Agent, Client, Conductor, ConnectTo, DynConnectTo, Proxy};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_rmcp::rmcp_3::McpServerExt as _;
+use futures::{StreamExt as _, channel::mpsc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::io::duplex;
@@ -323,4 +325,163 @@ async fn test_mcp_server_injected_into_all_session_setup_requests()
     );
 
     Ok(())
+}
+
+/// A proxy whose globally attached MCP server needs the session of every
+/// request.
+struct ProxyWithGatedMcp {
+    tool_runs: Arc<AtomicUsize>,
+}
+
+impl ConnectTo<Conductor> for ProxyWithGatedMcp {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<Proxy>,
+    ) -> Result<(), agent_client_protocol::Error> {
+        let tool_runs = self.tool_runs;
+        let mcp_server = McpServer::builder("test-server".to_string())
+            .tool_fn(
+                "echo",
+                "Echoes back the input",
+                async move |params: EchoParams, _cx| {
+                    tool_runs.fetch_add(1, Ordering::SeqCst);
+                    Ok(EchoOutput {
+                        result: params.message,
+                    })
+                },
+                agent_client_protocol::tool_fn!(),
+            )
+            .build()
+            .with_admission(
+                async |request| {
+                    request.require_session_id()?;
+                    Ok(())
+                },
+                agent_client_protocol::mcp_admission!(),
+            );
+
+        agent_client_protocol::Proxy
+            .v1()
+            .name("proxy-with-gated-mcp")
+            .with_mcp_server(mcp_server)
+            .connect_to(client)
+            .await
+    }
+}
+
+type McpCallOutcome = Result<MessageMcpResponse, agent_client_protocol::Error>;
+
+/// An agent that calls the `echo` tool of the injected server twice for each
+/// new session: without a session, then for the session `child`.
+struct CallingAgent {
+    outcomes: mpsc::UnboundedSender<McpCallOutcome>,
+}
+
+impl ConnectTo<Client> for CallingAgent {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<Agent>,
+    ) -> Result<(), agent_client_protocol::Error> {
+        let outcomes = self.outcomes;
+        Agent
+            .v1()
+            .name("calling-agent")
+            .on_receive_request(
+                async |request: InitializeRequest, responder, _cx| {
+                    responder.respond(InitializeResponse::new(request.protocol_version))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |request: NewSessionRequest, responder, cx| {
+                    let server_id = request
+                        .mcp_servers
+                        .iter()
+                        .find_map(|server| match server {
+                            SchemaMcpServer::Acp(server) => Some(server.server_id.clone()),
+                            _ => None,
+                        })
+                        .expect("the proxy injects its MCP server");
+                    let outcomes = outcomes.clone();
+                    let mcp_cx = cx.clone();
+                    cx.spawn(async move {
+                        let params = serde_json::json!({
+                            "name": "echo",
+                            "arguments": {"message": "hello"},
+                            "_meta": {
+                                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                                "io.modelcontextprotocol/clientCapabilities": {}
+                            }
+                        });
+                        for session_id in [None, Some(SessionId::new("child"))] {
+                            let request = MessageMcpRequest::new(
+                                server_id.clone(),
+                                "echo-call",
+                                "tools/call",
+                            )
+                            .params(params.as_object().unwrap().clone())
+                            .session_id(session_id);
+                            let outcome = mcp_cx.send_request(request).block_task().await;
+                            outcomes
+                                .unbounded_send(outcome)
+                                .map_err(agent_client_protocol::Error::into_internal_error)?;
+                        }
+                        Ok(())
+                    })?;
+                    responder.respond(NewSessionResponse::new(SessionId::new("root")))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_to(client)
+            .await
+    }
+}
+
+/// The admission check of a globally attached server decides before a request
+/// runs, like the check of a server attached to one session.
+#[tokio::test]
+async fn test_global_mcp_server_admission_check_rejects_before_the_tool_runs()
+-> Result<(), agent_client_protocol::Error> {
+    let tool_runs = Arc::new(AtomicUsize::new(0));
+    let (outcomes_tx, mut outcomes) = mpsc::unbounded();
+    let proxy = DynConnectTo::<Conductor>::new(ProxyWithGatedMcp {
+        tool_runs: tool_runs.clone(),
+    });
+    let agent = DynConnectTo::<Client>::new(CallingAgent {
+        outcomes: outcomes_tx,
+    });
+
+    run_test(vec![proxy], agent, async |connection_to_editor| {
+        recv(connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::V1)))
+            .await?;
+        recv(connection_to_editor.send_request(NewSessionRequest::new(PathBuf::from("/tmp"))))
+            .await?;
+
+        let mut next = async || {
+            tokio::time::timeout(std::time::Duration::from_secs(5), outcomes.next())
+                .await
+                .expect("the MCP call should not hang")
+                .expect("the agent reports each call")
+        };
+        let rejected = next()
+            .await
+            .expect_err("a call without a session is rejected");
+        assert_eq!(
+            serde_json::to_value(rejected)?,
+            serde_json::json!({
+                "code": -32602,
+                "message": "Invalid params",
+                "data": "this MCP server requires sessionId on mcp/message",
+            })
+        );
+
+        let MessageMcpResponse::Result { result, .. } = next().await? else {
+            panic!("the attributed call should return a tool result")
+        };
+        assert_eq!(result["structuredContent"]["result"], "hello");
+        // Two calls, and the tool ran for the admitted one only.
+        assert_eq!(tool_runs.load(Ordering::SeqCst), 1);
+        Ok::<(), agent_client_protocol::Error>(())
+    })
+    .await
 }

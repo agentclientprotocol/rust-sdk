@@ -123,6 +123,16 @@ impl ConnectTo<Conductor> for NativeMcpProvider {
                         "tools/backend-failure" => {
                             return responder.respond_with_error(agent_client_protocol::Error::internal_error());
                         }
+                        // A provider that needs the session to run a request.
+                        // The bridge names no session or tool call.
+                        "tools/needs-session" => {
+                            assert_eq!(request.session_id, None);
+                            assert_eq!(request.tool_call_id, None);
+                            return responder.respond_with_error(
+                                agent_client_protocol::Error::invalid_params()
+                                    .data("this MCP server requires sessionId on mcp/message"),
+                            );
+                        }
                         _ => panic!("unexpected fixture method {}", request.method),
                     };
                     responder.respond(serde_json::from_value::<MessageMcpResponse>(
@@ -693,19 +703,42 @@ async fn direct_v1_calls_preserve_inner_errors_without_hidden_listing()
             .await;
             assert_eq!(outer_error["id"], 7);
             assert_eq!(outer_error["error"]["code"], -33002);
+            // A provider that needs the session rejects the request with
+            // `-32602`. The MCP client's own params are fine, so it sees a
+            // binding failure that says the server refused, and why.
+            let rejected = post_json(
+                &url,
+                &bearer,
+                serde_json::json!(8),
+                "tools/needs-session",
+                serde_json::json!({}),
+            )
+            .await;
+            assert_eq!(
+                rejected,
+                serde_json::json!({
+                    "jsonrpc":"2.0","id":8,
+                    "error":{
+                        "code":-33002,
+                        "message":"The MCP server refused this request before running it. \
+                            Reason: this MCP server requires sessionId on mcp/message. \
+                            Changing the tool arguments will not help."
+                    }
+                })
+            );
             Ok(())
         },
     )
     .await?;
     assert_eq!(
         count.load(Ordering::SeqCst),
-        3,
+        4,
         "no hidden tools/list or handshake"
     );
     let ids = ids.lock().unwrap();
     assert_eq!(
         ids.iter().collect::<std::collections::HashSet<_>>().len(),
-        3
+        4
     );
     Ok(())
 }

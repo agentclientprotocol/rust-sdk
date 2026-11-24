@@ -53,6 +53,8 @@
 
 #[cfg(feature = "unstable_mcp_over_acp")]
 mod active_session;
+#[cfg(feature = "unstable_mcp_over_acp")]
+mod admission;
 mod connect;
 mod context;
 #[cfg(feature = "schemars")]
@@ -65,6 +67,8 @@ mod tool;
 #[cfg(feature = "schemars")]
 mod tool_fn;
 
+#[cfg(feature = "unstable_mcp_over_acp")]
+pub use admission::{McpAdmission, McpRejection};
 pub use connect::McpServerConnect;
 pub use context::{McpConnectionContext, McpConnectionTo};
 #[cfg(feature = "schemars")]

@@ -12,7 +12,9 @@ use crate::{
 };
 
 #[cfg(feature = "unstable_mcp_over_acp")]
-use super::McpService;
+use super::{McpAdmission, McpRejection, McpService, admission::AdmissionChecks};
+#[cfg(feature = "unstable_mcp_over_acp")]
+use futures::future::BoxFuture;
 #[cfg(feature = "unstable_mcp_over_acp")]
 use uuid::Uuid;
 
@@ -99,6 +101,10 @@ pub struct McpServer<Counterpart: Role, Run = NullRun> {
     #[cfg(feature = "unstable_mcp_over_acp")]
     service: Option<Arc<dyn McpService<Counterpart>>>,
 
+    /// The checks from `with_admission`, run before each `mcp/message` request.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    admission: AdmissionChecks,
+
     /// The runner is a task that should be run alongside the message handler.
     /// Some futures direct messages back through channels to this future which actually
     /// handles responding to the client.
@@ -137,6 +143,8 @@ where
             connect: Arc::new(c),
             #[cfg(feature = "unstable_mcp_over_acp")]
             service: None,
+            #[cfg(feature = "unstable_mcp_over_acp")]
+            admission: AdmissionChecks::default(),
             runner,
         }
     }
@@ -165,6 +173,7 @@ where
             phantom: PhantomData,
             connect: Arc::new(standalone),
             service: Some(Arc::new(service)),
+            admission: AdmissionChecks::default(),
             runner,
         }
     }
@@ -179,11 +188,13 @@ where
             phantom: _,
             connect,
             service,
+            admission,
             runner,
         } = self;
         let server_id = McpServerAcpId::new(format!("mcp-server:{}", Uuid::new_v4()));
         (
-            McpSessionHandler::new_with_service(server_id, connect, service),
+            McpSessionHandler::new_with_service(server_id, connect, service)
+                .with_admission(admission),
             runner,
         )
     }
@@ -198,13 +209,114 @@ where
             phantom: _,
             connect,
             service,
+            admission,
             runner,
         } = self;
         let server_id = McpServerAcpId::new(format!("mcp-server:{}", Uuid::new_v4()));
         (
-            V2McpSessionHandler::new_with_service(server_id, connect, service),
+            V2McpSessionHandler::new_with_service(server_id, connect, service)
+                .with_admission(admission),
             runner,
         )
+    }
+}
+
+#[cfg(feature = "unstable_mcp_over_acp")]
+impl<Counterpart: Role, Run> McpServer<Counterpart, Run> {
+    /// Adds a check that decides, before each `mcp/message` request runs,
+    /// whether the request is admitted.
+    ///
+    /// Use it for a server that needs the session of a request, or that
+    /// refuses a session after its own check. The check is an async closure
+    /// of the request. Pass [`mcp_admission!`](crate::mcp_admission) as the
+    /// last argument:
+    ///
+    /// ```
+    /// # use agent_client_protocol::{Agent, mcp_server::McpServer};
+    /// # fn example(server: McpServer<Agent>) -> McpServer<Agent> {
+    /// server.with_admission(
+    ///     async |request| {
+    ///         request.require_session_id()?;
+    ///         Ok(())
+    ///     },
+    ///     agent_client_protocol::mcp_admission!(),
+    /// )
+    /// # }
+    /// ```
+    ///
+    /// A check can capture the provider's state and `await`:
+    ///
+    /// ```
+    /// # use agent_client_protocol::{
+    /// #     Agent,
+    /// #     mcp_server::{McpRejection, McpServer},
+    /// #     v1::schema::SessionId,
+    /// # };
+    /// # struct Sessions;
+    /// # impl Sessions {
+    /// #     async fn is_active(&self, _session_id: &SessionId) -> bool {
+    /// #         true
+    /// #     }
+    /// # }
+    /// # fn example(server: McpServer<Agent>, sessions: Sessions) -> McpServer<Agent> {
+    /// server.with_admission(
+    ///     async move |request| {
+    ///         let session_id = request.require_session_id()?;
+    ///         if !sessions.is_active(session_id).await {
+    ///             return Err(McpRejection::session_rejected("the session is not active"));
+    ///         }
+    ///         Ok(())
+    ///     },
+    ///     agent_client_protocol::mcp_admission!(),
+    /// )
+    /// # }
+    /// ```
+    ///
+    /// The check runs for every request to this server, such as `tools/call`,
+    /// `tools/list`, and `server/discover`. It runs after the SDK has checked
+    /// the inner request's own metadata, and before the service, connector,
+    /// or tool is called. A rejected request reaches none of them. The SDK
+    /// answers it with the outer ACP error Invalid params (`-32602`), with
+    /// the [`McpRejection`]'s reason as the `data` string.
+    ///
+    /// A request holds its request ID while its check is pending, so another
+    /// request with that ID is answered as a duplicate. The ID is free again
+    /// once the request is answered, also after a rejection. Cancellation by
+    /// the Agent, removal of the server's registration, and connection
+    /// shutdown end a pending check as they end a running request: with
+    /// Request cancelled (`-32800`), with `-33001`, and without a response.
+    /// The SDK then drops the check's future, so a check must not own work
+    /// that needs cleanup.
+    ///
+    /// Calling this method again adds another check. The SDK runs them one
+    /// after the other in the order they were added. The first rejection
+    /// answers the request, and the checks after it do not run. A service's
+    /// own [`McpService::admit`] runs after all of them.
+    ///
+    /// The checks of several requests can be pending at the same time, so a
+    /// check cannot change the state it captures. Put state that changes
+    /// behind a lock.
+    ///
+    /// A standalone MCP connection has no `mcp/message` request, so the check
+    /// does not run there. A tool that is also served standalone still has to
+    /// handle a request without a session.
+    ///
+    /// To test a check without a connection, build its request with
+    /// [`McpAdmission::new`].
+    #[must_use]
+    pub fn with_admission<F>(
+        mut self,
+        admit: F,
+        to_future_hack: impl for<'a> Fn(&'a F, McpAdmission) -> BoxFuture<'a, Result<(), McpRejection>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self
+    where
+        F: AsyncFn(McpAdmission) -> Result<(), McpRejection> + Send + Sync + 'static,
+    {
+        self.admission.push(admit, to_future_hack);
+        self
     }
 }
 
@@ -264,6 +376,12 @@ where
             server_id,
             connect,
         }
+    }
+
+    /// Sets the checks from `McpServer::with_admission`.
+    fn with_admission(mut self, admission: AdmissionChecks) -> Self {
+        self.active_session = self.active_session.with_admission(admission);
+        self
     }
 
     fn declaration(&self) -> SchemaMcpServer {
@@ -339,6 +457,12 @@ where
             server_id,
             connect,
         }
+    }
+
+    /// Sets the checks from `McpServer::with_admission`.
+    fn with_admission(mut self, admission: AdmissionChecks) -> Self {
+        self.active_session = self.active_session.with_admission(admission);
+        self
     }
 
     fn declaration(&self) -> crate::v2::schema::McpServer {
@@ -566,6 +690,8 @@ where
             phantom: _,
             #[cfg(feature = "unstable_mcp_over_acp")]
                 service: _,
+            #[cfg(feature = "unstable_mcp_over_acp")]
+                admission: _,
         } = self;
 
         let (tx, mut rx) = mpsc::unbounded();

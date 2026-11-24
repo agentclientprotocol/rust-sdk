@@ -11,7 +11,7 @@ use futures::{
 };
 use serde_json::{Map, Value};
 
-use super::McpConnectionTo;
+use super::{McpAdmission, McpConnectionTo, McpRejection};
 use crate::{
     Error, RequestCancellation, Role,
     v1::schema::{McpError, McpRequestId, McpServerAcpId, SessionId, ToolCallId},
@@ -204,11 +204,43 @@ impl<Counterpart: Role> McpRequestContext<Counterpart> {
 
 /// Reusable MCP application state with owned invocation futures.
 pub trait McpService<Counterpart: Role>: Send + Sync + 'static {
+    /// Decides, before [`execute`](Self::execute) is called, whether a
+    /// request is admitted. The default admits every request.
+    ///
+    /// The SDK awaits it after the checks the server was given with
+    /// [`McpServer::with_admission`](super::McpServer::with_admission), and
+    /// answers a rejection the same way: with the outer ACP error Invalid
+    /// params (`-32602`), without calling `execute`. A service built from a
+    /// tool registry uses it to apply the rule of the tool a `tools/call`
+    /// request names.
+    ///
+    /// The SDK drops the returned future when the request is cancelled, its
+    /// server registration is removed, or the connection shuts down. It must
+    /// not own work that needs cleanup.
+    ///
+    /// # Errors
+    ///
+    /// The future returns the [`McpRejection`] that answers a request the
+    /// service does not admit.
+    fn admit(&self, request: McpAdmission) -> BoxFuture<'static, Result<(), McpRejection>> {
+        drop(request);
+        Box::pin(std::future::ready(Ok(())))
+    }
+
     /// Execute one invocation, including backend teardown.
     ///
     /// On operation cancellation, stop user work and complete owned cleanup
     /// before returning. The binding drives this future through cancellation;
     /// dropping it is not used as a substitute for joining cleanup.
+    ///
+    /// # Errors
+    ///
+    /// An `Err` from an operation that ran to its end is reported to the
+    /// Agent as an MCP backend failure (`-33002`) with the error's text as
+    /// `data`, whatever the error's own code is. To answer Invalid params
+    /// (`-32602`) for a missing or refused session, reject the request before
+    /// it runs, in [`admit`](Self::admit) or with
+    /// [`McpServer::with_admission`](super::McpServer::with_admission).
     fn execute(
         &self,
         request: McpRequest,
