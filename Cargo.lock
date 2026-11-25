@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agent-client-protocol"
-version = "5.6.0"
+version = "5.6.1"
 dependencies = [
  "agent-client-protocol-derive",
  "agent-client-protocol-schema",
@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-conductor"
-version = "5.6.0"
+version = "5.6.1"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-polyfill",
@@ -64,7 +64,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-cookbook"
-version = "5.6.0"
+version = "5.6.1"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-rmcp",
@@ -77,7 +77,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-derive"
-version = "5.6.0"
+version = "5.6.1"
 dependencies = [
  "quote",
  "syn 3.0.10",
@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-http"
-version = "5.6.0"
+version = "5.6.1"
 dependencies = [
  "agent-client-protocol",
  "async-stream",
@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-polyfill"
-version = "5.6.0"
+version = "5.6.1"
 dependencies = [
  "agent-client-protocol",
  "async-stream",
@@ -127,7 +127,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-rmcp"
-version = "5.6.0"
+version = "5.6.1"
 dependencies = [
  "agent-client-protocol",
  "futures",
@@ -180,7 +180,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-trace-viewer"
-version = "5.6.0"
+version = "5.6.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -657,9 +657,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.6.9"
+version = "4.6.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "844c5c0b65be192cb68d570cca1b21a6444431d24e39c084dc0336177015337c"
+checksum = "50066ca966813ca8957ee15361752f19424a8ff620dbe9c8993d9f99d99b04b3"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -667,9 +667,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.6.7"
+version = "4.6.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec0797fb7aeb1406c84efac526901f7ec3ead2124f946b494e72879d4b54704d"
+checksum = "a0ed97c96ef4efb3cc84e09fa388df4463e7cc3224ec38d7b1d9e45749333590"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1222,9 +1222,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.20"
+version = "0.4.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d29020232d6aa3fb1daca64c1127cf662cf97f254ae16c18c05b8ab635fc118"
+checksum = "b634322c4924093fe6a6e05ecbe5717cd3c6014934455f4ae8e5cf14ba3264a8"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -3734,18 +3734,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.64"
+version = "0.8.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed43f3060383c64b000f3c630550aebdfa9d3b76d48de32390483dd2cc7e0865"
+checksum = "32bc8a75f879cd6fe53a6bedf3c28f0e1b914c77424fc2be9e2ec85d7d25aff5"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.64"
+version = "0.8.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5cbd820fe3e35fb38c83b6dc7e6b1618bc46e0cd10073ae94e8d52dc468d8b9"
+checksum = "b8bfd2644ea1681f60cf95029ff18aa8ad1cc3f7b8fe37286f8e473bb29f816b"
 dependencies = [
  "proc-macro2",
  "quote",
