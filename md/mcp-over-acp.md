@@ -30,7 +30,9 @@ request's identity or capabilities from a previous call.
 can read them from its connection. An rmcp handler reads them from a
 [`McpRequestAttribution`](#in-an-rmcp-handler). Both are `None` when the agent
 sent none, for example for a request it sends during session setup. A child
-session's work carries the child's ID.
+session's work carries the child's ID. Even when `sessionId` names the active
+session, `serverId` routes the request to the provider, not to the session's
+update stream.
 
 The SDK does not check these values. Before a tool uses the session to choose
 what it acts on, check that the session is active on the connection, or is a

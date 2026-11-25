@@ -5736,25 +5736,24 @@ impl Dispatch {
             .is_some()
     }
 
-    /// Returns true if this message has a session-id field.
-    ///
-    /// Returns `false` for Response variants.
-    pub(crate) fn has_session_id(&self) -> bool {
-        self.has_field("sessionId")
+    /// The `sessionId` used to route a request or notification to an ACP session.
+    pub(crate) fn session_routing_field(&self) -> Option<&serde_json::Value> {
+        let message = self.message()?;
+        // MCP routes by serverId. Its optional sessionId is attribution for
+        // the provider, not an address for session handlers.
+        #[cfg(feature = "unstable_mcp_over_acp")]
+        if crate::v1::schema::MessageMcpRequest::matches_method(message.method()) {
+            return None;
+        }
+        message.params().get("sessionId")
     }
 
-    /// Extract the ACP session-id from this message (if any).
-    ///
-    /// Returns `Ok(None)` for Response variants.
-    pub(crate) fn get_session_id(&self) -> Result<Option<SessionId>, crate::Error> {
-        let Some(message) = self.message() else {
-            return Ok(None);
-        };
-        let Some(value) = message.params().get("sessionId") else {
-            return Ok(None);
-        };
-        let session_id = serde_json::from_value(value.clone())?;
-        Ok(Some(session_id))
+    /// Decode the session routing field, if present.
+    pub(crate) fn routing_session_id(&self) -> Result<Option<SessionId>, crate::Error> {
+        self.session_routing_field()
+            .map(SessionId::deserialize)
+            .transpose()
+            .map_err(Into::into)
     }
 
     /// Try to parse this as a notification of the given type.

@@ -379,14 +379,16 @@ mod mcp_attribution {
             let (transport, mut peer) = Channel::duplex();
             let (stop_tx, stop_rx) = oneshot::channel();
             let client = tokio::spawn(Client.v1().connect_with(transport, async move |cx| {
-                cx.build_session_cwd()?
+                // Install the active session route before the first MCP request,
+                // and keep its update stream open but unread.
+                let _setup = cx
+                    .build_session_cwd()?
                     .with_mcp_server(server)?
                     .block_task()
-                    .run_until(async |_session| {
-                        stop_rx.await.unwrap();
-                        Ok(())
-                    })
-                    .await
+                    .start_session()
+                    .await?;
+                stop_rx.await.unwrap();
+                Ok(())
             }));
             let output = script(&mut AgentSide::set_up(&mut peer).await).await;
             stop_tx.send(()).unwrap();
@@ -501,8 +503,8 @@ mod mcp_attribution {
                 json!({"sessionId": null, "toolCallId": null}),
             ),
             (
-                json!({"sessionId": "child"}),
-                json!({"sessionId": "child", "toolCallId": null}),
+                json!({"sessionId": "parent"}),
+                json!({"sessionId": "parent", "toolCallId": null}),
             ),
             (
                 json!({"sessionId": "child", "toolCallId": "call_1"}),
@@ -529,6 +531,19 @@ mod mcp_attribution {
             let (_, responses) = run(version, server(), &[call]).await;
             assert_eq!(responses[0]["error"]["code"], -32602, "{version:?}");
         }
+    }
+
+    /// No provider claims this server ID, so the session handler sees the
+    /// request regardless of the order in which the dynamic handlers run.
+    #[tokio::test]
+    async fn active_session_does_not_claim_requests_for_an_unknown_mcp_server() {
+        v1_session(server(), async |agent| {
+            agent.server_id = json!("unregistered");
+            let call = Call::new("tools/list", json!({"sessionId": "parent"}));
+            let response = agent.call(&call).await;
+            assert_eq!(response["error"]["code"], -33001, "{response}");
+        })
+        .await;
     }
 
     /// Whether `response` is the outer error Invalid params with `reason`.
@@ -627,9 +642,11 @@ mod mcp_attribution {
             };
             let calls = [
                 write("unattributed", json!({})),
+                // Even the active session's ID is attribution, not a route
+                // to its update stream. The provider gets to reject it.
                 write(
                     "refused",
-                    json!({"sessionId": "other", "toolCallId": "call_1"}),
+                    json!({"sessionId": "parent", "toolCallId": "call_1"}),
                 ),
                 write("accepted", json!({"sessionId": "child"})),
                 // The rule is for one tool, so other requests need no session.
@@ -658,7 +675,7 @@ mod mcp_attribution {
                     "method": "tools/call",
                     "toolName": "write",
                     "params": inner(json!({"name": "write"})),
-                    "sessionId": "other",
+                    "sessionId": "parent",
                     "toolCallId": "call_1",
                 }),
                 "{version:?}"
