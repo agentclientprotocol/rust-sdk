@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [5.6.1](https://github.com/agentclientprotocol/rust-sdk/compare/v5.6.0...v5.6.1) - 2026-11-25
+
+### Fixed
+
+- *(acp)* route MCP requests by server ID, not session attribution ([#529](https://github.com/agentclientprotocol/rust-sdk/pull/529))
+
 ## [5.6.0](https://github.com/agentclientprotocol/rust-sdk/compare/v5.5.1...v5.6.0) - 2026-11-24
 
 ### Added
