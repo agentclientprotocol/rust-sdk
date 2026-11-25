@@ -306,7 +306,7 @@ impl Role for Agent {
                 // installed before the connection starts. Retrying an
                 // unhandled message there would retain it forever because no
                 // per-session dynamic handler is expected.
-                let retry = message.has_session_id()
+                let retry = message.session_routing_field().is_some()
                     && connection
                         .protocol_version()
                         .is_none_or(|version| version == crate::schema::ProtocolVersion::V1);
@@ -1755,7 +1755,7 @@ where
         MatchDispatchFrom::new(message, &connection)
             .if_dispatch_from(Agent, async |message| {
                 // If this is for our session-id, proxy it to the client.
-                if let Some(session_id) = message.get_session_id()?
+                if let Some(session_id) = message.routing_session_id()?
                     && session_id == self.session_id
                 {
                     connection.send_proxied_message_to(Client, message)?;
